@@ -11,10 +11,10 @@ class ChronosSupervisedWrapper:
             config = yaml.safe_load(f)
         
         self.device = config['model']['device']
-        self.num_samples = self.config['model']['num_samples']
-        self.input_size = self.config['forecasting']['input_size']
-        self.output_size = self.config['forecasting']['output_size']
-        self.batch_size = self.config['forecasting']['batch_size']
+        self.num_samples = config['model']['num_samples']
+        self.input_size = config['forecasting']['input_size']
+        self.output_size = config['forecasting']['output_size']
+        self.batch_size = config['forecasting']['batch_size']
 
         dtype_map = {
             "float32": torch.float32,
