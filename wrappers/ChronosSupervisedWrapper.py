@@ -37,7 +37,7 @@ class ChronosSupervisedWrapper:
 
         for i in range(0, n_samples, self.batch_size):
             batch = X[i:i+self.batch_size]
-            context = torch.tensor(batch, dtype=torch.float32).to(self.device)
+            context = torch.tensor(batch, dtype=torch.float32)
             forecast = self.pipeline.predict(inputs=context, prediction_length=self.output_size, num_samples=self.num_samples, limit_prediction_length=False)
 
             # forecast shape: (num_samples, batch_size, output_size)
