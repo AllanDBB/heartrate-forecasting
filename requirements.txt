@@ -1,0 +1,9 @@
+numpy
+pandas
+scikit-learn
+joblib
+openpyxl
+torch
+transformers
+accelerate
+git+https://github.com/amazon-science/chronos-forecasting.git
