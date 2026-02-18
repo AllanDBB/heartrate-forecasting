@@ -27,7 +27,7 @@ class ChronosSupervisedWrapper:
         self.pipeline = ChronosPipeline.from_pretrained(
             config['model']['name'],
             torch_dtype=torch_dtype,
-            device=self.device
+            device_map=self.device,
         )
 
     def predict(self, X: np.ndarray) -> np.ndarray:
