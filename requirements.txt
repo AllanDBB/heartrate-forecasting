@@ -7,3 +7,9 @@ torch
 transformers
 accelerate
 git+https://github.com/amazon-science/chronos-forecasting.git
+
+# Lag-Llama (requiere clonar el repo aparte)
+gluonts
+pytorch-lightning
+ujson
+huggingface_hub

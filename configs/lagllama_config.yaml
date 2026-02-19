@@ -1,0 +1,11 @@
+model:
+  ckpt_path: "lag-llama.ckpt"          # checkpoint descargado de HuggingFace
+  device: "cuda"                       # "cpu" or "cuda"
+  num_samples: 10                      # muestras probabilísticas para la mediana
+  freq: "S"                            # "S" = seconds, frecuencia de los datos
+
+forecasting:
+  input_size: 200    # context_length, debe coincidir con inp= en el notebook
+  output_size: 200   # prediction_length, debe coincidir con out= en el notebook
+  batch_size: 32
+
