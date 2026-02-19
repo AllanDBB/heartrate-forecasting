@@ -29,18 +29,27 @@ class LagLlamaSupervisedWrapper:
         self.batch_size = config['forecasting']['batch_size']
         self.freq = config['model']['freq']
 
+        # Cargar hiperparámetros del checkpoint
+        ckpt = torch.load(config['model']['ckpt_path'], map_location=self.device)
+        estimator_args = ckpt["hyper_parameters"]["model_kwargs"]
+
         estimator = LagLlamaEstimator(
             ckpt_path=config['model']['ckpt_path'],
             prediction_length=self.output_size,
             context_length=self.input_size,
             device=self.device,
             num_parallel_samples=self.num_samples,
+            input_size=estimator_args["input_size"],
+            n_layer=estimator_args["n_layer"],
+            n_embd_per_head=estimator_args["n_embd_per_head"],
+            n_head=estimator_args["n_head"],
+            scaling=estimator_args["scaling"],
+            time_feat=estimator_args["time_feat"],
         )
-        # Crear el predictor para inferencia
-        self.predictor = estimator.create_predictor(
-            estimator.create_training_network(self.device),
-            estimator.create_instance_splitter("test"),
-        )
+        # Crear el predictor para inferencia usando la API correcta
+        lightning_module = estimator.create_lightning_module()
+        transformation = estimator.create_transformation()
+        self.predictor = estimator.create_predictor(transformation, lightning_module)
 
     def predict(self, X: np.ndarray) -> np.ndarray:
 
