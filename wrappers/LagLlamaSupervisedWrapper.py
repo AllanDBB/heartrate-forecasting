@@ -30,7 +30,8 @@ class LagLlamaSupervisedWrapper:
         self.freq = config['model']['freq']
 
         # Cargar hiperparámetros del checkpoint
-        ckpt = torch.load(config['model']['ckpt_path'], map_location=self.device)
+        # weights_only=False necesario porque el ckpt contiene objetos GluonTS (trusted source)
+        ckpt = torch.load(config['model']['ckpt_path'], map_location=self.device, weights_only=False)
         estimator_args = ckpt["hyper_parameters"]["model_kwargs"]
 
         estimator = LagLlamaEstimator(
