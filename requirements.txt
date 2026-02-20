@@ -14,8 +14,8 @@ uni2ts
 gluonts
 huggingface_hub
 
-# MOMENT
-momentfm
+# MOMENT (instalar desde GitHub — la wheel de PyPI falla en Colab)
+# git+https://github.com/moment-timeseries-foundation-model/moment.git
 
 # Lag-Llama (requiere clonar el repo aparte)
 pytorch-lightning
