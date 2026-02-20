@@ -1,0 +1,13 @@
+model:
+  name: "AutonLab/MOMENT-1-large"   # options: MOMENT-1-large (0.3B params), MOMENT-1-base
+  device: "cuda"                     # "cpu" or "cuda"
+
+forecasting:
+  input_size: 200      # context window length (our sequences)
+  output_size: 200     # forecast horizon
+  batch_size: 32       # smaller batch because model is large (~0.3B params)
+  context_length: 512  # MOMENT's fixed internal context length (pads input_size -> 512)
+
+training:
+  epochs: 1            # fine-tune linear head for 1 epoch (encoder stays frozen)
+  lr: 1.0e-4

@@ -14,6 +14,9 @@ uni2ts
 gluonts
 huggingface_hub
 
+# MOMENT
+momentfm
+
 # Lag-Llama (requiere clonar el repo aparte)
 pytorch-lightning
 ujson
