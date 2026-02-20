@@ -34,6 +34,10 @@ class LagLlamaSupervisedWrapper:
         ckpt = torch.load(config['model']['ckpt_path'], map_location=self.device, weights_only=False)
         estimator_args = ckpt["hyper_parameters"]["model_kwargs"]
 
+        # Allowlist GluonTS globals required by the checkpoint (PyTorch >= 2.6 sets weights_only=True by default)
+        from gluonts.torch.distributions.studentT import StudentTOutput
+        torch.serialization.add_safe_globals([StudentTOutput])
+
         estimator = LagLlamaEstimator(
             ckpt_path=config['model']['ckpt_path'],
             prediction_length=self.output_size,
