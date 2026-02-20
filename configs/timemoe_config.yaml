@@ -1,0 +1,8 @@
+model:
+  name: "Maple728/TimeMoE-50M"   # options: Maple728/TimeMoE-50M (base), Maple728/TimeMoE-200M (large)
+  device: "cuda"                  # "cpu" or "cuda"
+
+forecasting:
+  input_size: 200    # context length (context + prediction <= 4096)
+  output_size: 200   # prediction length
+  batch_size: 64
