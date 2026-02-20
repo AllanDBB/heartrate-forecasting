@@ -1,5 +1,6 @@
 import gc
 import torch
+import torchvision  # must be imported before uni2ts to register torchvision ops
 import numpy as np
 import yaml
 import pandas as pd

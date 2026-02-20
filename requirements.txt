@@ -4,6 +4,7 @@ scikit-learn
 joblib
 openpyxl
 torch
+torchvision
 transformers
 accelerate
 git+https://github.com/amazon-science/chronos-forecasting.git
