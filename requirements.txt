@@ -8,8 +8,11 @@ transformers
 accelerate
 git+https://github.com/amazon-science/chronos-forecasting.git
 
-# Lag-Llama (requiere clonar el repo aparte)
+# Moirai (uni2ts)
+uni2ts
 gluonts
+huggingface_hub
+
+# Lag-Llama (requiere clonar el repo aparte)
 pytorch-lightning
 ujson
-huggingface_hub

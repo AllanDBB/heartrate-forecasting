@@ -1,0 +1,11 @@
+model:
+  name: "Salesforce/moirai-1.1-R-small"  # options: moirai-1.0-R-small/base/large, moirai-1.1-R-small/base/large
+  device: "cuda"                           # "cpu" or "cuda"
+  num_samples: 100
+  patch_size: "auto"                       # "auto" or 8, 16, 32, 64, 128
+  freq: "h"                                # GluonTS frequency string
+
+forecasting:
+  input_size: 200
+  output_size: 200
+  batch_size: 64
