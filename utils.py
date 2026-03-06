@@ -355,6 +355,48 @@ def plot_prediction_timeline(y_true, y_pred, ids_list, inp, subject_idx=0,
     plt.show()
     return fig
 
+def plot_all_subjects_timeline(y_true, y_pred, ids_list, inp,
+                               title="Línea de Tiempo: Real vs Predicción"):
+    """
+    Plot prediction timeline for EVERY subject in ids_list.
+    """
+    ids_arr = np.array(ids_list)
+    unique_ids = sorted(set(ids_list))
+
+    for subject_idx, uid in enumerate(unique_ids):
+        mask = ids_arr == uid
+        yt = y_true[mask]
+        yp = y_pred[mask]
+
+        n_windows = len(yt) // inp
+        remainder = len(yt) - n_windows * inp
+
+        real_parts, pred_parts = [], []
+        for i in range(n_windows):
+            idx = i * inp
+            real_parts.append(yt[idx])
+            pred_parts.append(yp[idx])
+        if remainder > 0:
+            real_parts.append(yt[-1][-remainder:])
+            pred_parts.append(yp[-1][-remainder:])
+
+        real_full = np.concatenate(real_parts)
+        pred_full = np.concatenate(pred_parts)
+
+        fig, ax = plt.subplots(figsize=(16, 4))
+        t = np.arange(len(real_full))
+        ax.plot(t, real_full, label='Real', color='steelblue', linewidth=1.5)
+        ax.plot(t, pred_full, label='Predicción', color='darkorange', linewidth=1.5, alpha=0.8)
+        ax.fill_between(t, real_full, pred_full, alpha=0.1, color='red')
+        ax.set_title(f'{title} — Sujeto: {uid}', fontsize=12, fontweight='bold')
+        ax.set_xlabel('Tiempo (pasos)')
+        ax.set_ylabel('Valor')
+        ax.legend(fontsize=10)
+        ax.grid(True, alpha=0.3)
+        plt.tight_layout()
+        plt.show()
+
+
 def loadAllFiles(folder_path):
     # --- Listar archivos Excel ---
     files = [f for f in os.listdir(folder_path) if f.endswith(('.xlsx', '.xls'))]

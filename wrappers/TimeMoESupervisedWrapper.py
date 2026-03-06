@@ -10,6 +10,28 @@ from torch.optim import Adam
 from tqdm import tqdm
 from transformers import AutoModelForCausalLM
 
+# ── Polyfill for DynamicCache.from_legacy_cache ──────────────────────────────
+# Removed in transformers >= 4.45. TimeMoE's HuggingFace code still uses it.
+from transformers import DynamicCache
+if not hasattr(DynamicCache, 'from_legacy_cache'):
+    @classmethod
+    def _from_legacy_cache(cls, past_key_values=None):
+        cache = cls()
+        if past_key_values is not None:
+            for layer_idx in range(len(past_key_values)):
+                key_states, value_states = past_key_values[layer_idx]
+                cache.update(key_states, value_states, layer_idx)
+        return cache
+    DynamicCache.from_legacy_cache = _from_legacy_cache
+
+if not hasattr(DynamicCache, 'get_usable_length'):
+    def _get_usable_length(self, new_seq_length, layer_idx=0):
+        if len(self.key_cache) <= layer_idx:
+            return 0
+        return self.key_cache[layer_idx].shape[-2]
+    DynamicCache.get_usable_length = _get_usable_length
+# ─────────────────────────────────────────────────────────────────────────────
+
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..'))
 import utils
 
