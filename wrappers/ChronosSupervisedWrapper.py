@@ -1,8 +1,41 @@
 import gc
+import os
+import sys
 import torch
+import torch.nn as nn
 import numpy as np
 import yaml
+from torch.utils.data import DataLoader, TensorDataset
+from torch.optim import Adam
 from chronos import ChronosPipeline
+
+sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..'))
+import utils
+
+
+class _ForecastAdapter(nn.Module):
+    """Lightweight MLP adapter that refines zero-shot predictions."""
+    def __init__(self, input_size, output_size, hidden=256):
+        super().__init__()
+        self.encoder = nn.Sequential(
+            nn.Linear(input_size, hidden),
+            nn.LayerNorm(hidden),
+            nn.GELU(),
+        )
+        self.refiner = nn.Sequential(
+            nn.Linear(hidden + output_size, hidden),
+            nn.LayerNorm(hidden),
+            nn.GELU(),
+            nn.Dropout(0.1),
+            nn.Linear(hidden, output_size),
+        )
+
+    def forward(self, x_context, base_pred):
+        ctx = self.encoder(x_context)
+        combined = torch.cat([ctx, base_pred], dim=-1)
+        correction = self.refiner(combined)
+        return base_pred + correction
+
 
 class ChronosSupervisedWrapper:
 
@@ -29,19 +62,74 @@ class ChronosSupervisedWrapper:
             torch_dtype=torch_dtype,
             device_map=self.device,
         )
+        self.adapter = None
 
-    def predict(self, X: np.ndarray) -> np.ndarray:
+    def fit(self, X_train: np.ndarray, y_train: np.ndarray,
+            X_val: np.ndarray = None, y_val: np.ndarray = None,
+            epochs: int = 10, lr: float = 1e-3):
+        """
+        Fine-tune Chronos via a residual adapter trained on zero-shot predictions.
 
+        Strategy:
+          1. Run the frozen Chronos model once to cache zero-shot predictions.
+          2. Train a lightweight MLP adapter that corrects the base predictions.
+          3. During subsequent predict() calls the adapter refines results.
+        """
+        print("Paso 1/2: Generando predicciones zero-shot del modelo base (una sola vez)…")
+        base_preds = self._predict_raw(X_train)
+
+        print("Paso 2/2: Entrenando adaptador residual…")
+        device = 'cuda' if torch.cuda.is_available() else 'cpu'
+        self.adapter = _ForecastAdapter(
+            self.input_size, self.output_size
+        ).to(device)
+
+        dataset = TensorDataset(
+            torch.tensor(X_train, dtype=torch.float32),
+            torch.tensor(base_preds, dtype=torch.float32),
+            torch.tensor(y_train, dtype=torch.float32),
+        )
+        loader = DataLoader(dataset, batch_size=64, shuffle=True)
+
+        optimizer = Adam(self.adapter.parameters(), lr=lr)
+        criterion = nn.MSELoss()
+
+        self.adapter.train()
+        for epoch in range(epochs):
+            total_loss = 0.0
+            for x_batch, bp_batch, y_batch in loader:
+                x_batch = x_batch.to(device)
+                bp_batch = bp_batch.to(device)
+                y_batch = y_batch.to(device)
+
+                pred = self.adapter(x_batch, bp_batch)
+                loss = criterion(pred, y_batch)
+
+                optimizer.zero_grad()
+                loss.backward()
+                optimizer.step()
+                total_loss += loss.item()
+
+            avg = total_loss / len(loader)
+            print(f"  Epoch {epoch+1}/{epochs}: loss={avg:.4f}")
+
+        self.adapter.eval()
+        print("Adaptador entrenado.")
+
+    def _predict_raw(self, X: np.ndarray) -> np.ndarray:
+        """Zero-shot prediction without adapter."""
         n_samples = X.shape[0]
         y_pred = np.zeros((n_samples, self.output_size))
 
         for i in range(0, n_samples, self.batch_size):
             batch = X[i:i+self.batch_size]
             context = torch.tensor(batch, dtype=torch.float32)
-            forecast = self.pipeline.predict(inputs=context, prediction_length=self.output_size, num_samples=self.num_samples, limit_prediction_length=False)
-
-            # forecast shape: (num_samples, batch_size, output_size)
-            # We take the median across the num_samples dimension to get a single prediction per input sequence
+            forecast = self.pipeline.predict(
+                inputs=context,
+                prediction_length=self.output_size,
+                num_samples=self.num_samples,
+                limit_prediction_length=False,
+            )
             median = np.quantile(forecast.numpy(), 0.5, axis=1)
             y_pred[i:i+self.batch_size] = median
 
@@ -50,32 +138,19 @@ class ChronosSupervisedWrapper:
             torch.cuda.empty_cache()
 
         return y_pred
+
+    def predict(self, X: np.ndarray) -> np.ndarray:
+        base = self._predict_raw(X)
+        if self.adapter is not None:
+            device = next(self.adapter.parameters()).device
+            x_t = torch.tensor(X, dtype=torch.float32).to(device)
+            b_t = torch.tensor(base, dtype=torch.float32).to(device)
+            with torch.no_grad():
+                refined = self.adapter(x_t, b_t).cpu().numpy()
+            return refined
+        return base
     
     def evaluate(self, X: np.ndarray, y_true: np.ndarray) -> dict:
-    
+        """Evaluate with all metrics: MAE, RMSE, MAPE, DTW, DDTW, CrossCorrelation."""
         y_pred = self.predict(X)
-        mae = np.mean(np.abs(y_true - y_pred))
-        rmse = np.sqrt(np.mean((y_true - y_pred) ** 2))
-        mape = np.mean(np.abs((y_true - y_pred) / (y_true + 1e-8))) * 100
-
-        metrics = {
-            "MAE": round(float(mae), 4),
-            "RMSE": round(float(rmse), 4),
-            "MAPE": round(float(mape), 4)
-        }
-
-        print("Evaluation Metrics:")
-        for metric, value in metrics.items():
-            print(f"{metric}: {value}")
-
-        return metrics
-
-
-
-
-## Questions for later:
-# 1. Why use axis = 1 in median
-# 2. what a context means
-# 3. cleaning context, forecast, median could cause problems?
-    
-# 4. Explain what MAE, RMSE & MAPE are and how they are calculated.
+        return utils.evaluate_all_metrics(y_true, y_pred)

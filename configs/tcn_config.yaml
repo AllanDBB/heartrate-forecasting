@@ -1,0 +1,19 @@
+model:
+  pretrained_path: "modelos/tcn_0.keras"   # Path to pretrained model (null to train from scratch)
+
+architecture:
+  filters: 32
+  kernel_size: 12
+  dilations: [1, 2, 4, 8]
+  dropout: 0.1
+  activation: "relu"
+
+forecasting:
+  input_size: 200     # context window length
+  output_size: 200    # forecast horizon
+
+training:
+  batch_size: 25
+  epochs: 40
+  lr: 0.001
+  patience: 3         # early stopping patience

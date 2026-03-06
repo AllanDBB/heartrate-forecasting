@@ -3,6 +3,7 @@ pandas
 scikit-learn
 joblib
 openpyxl
+matplotlib
 torch
 torchvision
 transformers
@@ -20,3 +21,7 @@ huggingface_hub
 # Lag-Llama (requiere clonar el repo aparte)
 pytorch-lightning
 ujson
+
+# TCN (modelo del profesor)
+keras-tcn
+tensorflow

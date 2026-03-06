@@ -3,9 +3,357 @@ import pandas as pd
 import os
 import joblib
 import math
+import matplotlib.pyplot as plt
+import matplotlib.gridspec as gridspec
 from sklearn.preprocessing import StandardScaler
 from sklearn.model_selection import train_test_split
 from sklearn.preprocessing import MinMaxScaler
+
+
+# ============================================================================
+# ADVANCED EVALUATION METRICS: DTW, DDTW, Cross-Correlation
+# ============================================================================
+
+def _dtw_distance(s1, s2, window=None):
+    """
+    Compute Dynamic Time Warping distance between two 1D sequences.
+    Uses Sakoe-Chiba band constraint for performance.
+
+    Args:
+        s1, s2: 1D numpy arrays
+        window: int, Sakoe-Chiba band radius (None = no constraint)
+
+    Returns:
+        float: DTW distance (Euclidean-based)
+    """
+    n, m = len(s1), len(s2)
+    if window is None:
+        window = max(n, m)
+    window = max(window, abs(n - m))
+
+    D = np.full((n + 1, m + 1), np.inf)
+    D[0, 0] = 0.0
+
+    for i in range(1, n + 1):
+        j_start = max(1, i - window)
+        j_end = min(m, i + window)
+        for j in range(j_start, j_end + 1):
+            cost = (s1[i - 1] - s2[j - 1]) ** 2
+            D[i, j] = cost + min(D[i - 1, j], D[i, j - 1], D[i - 1, j - 1])
+
+    return np.sqrt(D[n, m])
+
+
+def _derivative(s):
+    """
+    Compute approximate derivative for DDTW (Keogh & Pazzani, 2001).
+    d(x_i) = ((x_i - x_{i-1}) + (x_{i+1} - x_{i-1}) / 2) / 2
+    """
+    d = np.zeros(len(s))
+    for i in range(1, len(s) - 1):
+        d[i] = ((s[i] - s[i - 1]) + (s[i + 1] - s[i - 1]) / 2.0) / 2.0
+    d[0] = d[1]
+    d[-1] = d[-2]
+    return d
+
+
+def compute_dtw(y_true_row, y_pred_row, window=20):
+    """
+    DTW distance between a single (true, pred) pair.
+    """
+    return _dtw_distance(y_true_row, y_pred_row, window=window)
+
+
+def compute_ddtw(y_true_row, y_pred_row, window=20):
+    """
+    Derivative Dynamic Time Warping: DTW on the approximate derivatives.
+    Captures shape similarity independent of amplitude differences.
+    """
+    d_true = _derivative(y_true_row)
+    d_pred = _derivative(y_pred_row)
+    return _dtw_distance(d_true, d_pred, window=window)
+
+
+def compute_cross_correlation(y_true_row, y_pred_row):
+    """
+    Maximum normalized cross-correlation between two 1D sequences.
+    Returns a value in [-1, 1] where 1 = perfect alignment.
+    """
+    s1 = y_true_row - np.mean(y_true_row)
+    s2 = y_pred_row - np.mean(y_pred_row)
+    norm = (np.std(y_true_row) * np.std(y_pred_row) + 1e-8) * len(y_true_row)
+    correlation = np.correlate(s1, s2, mode='full') / norm
+    return np.max(correlation)
+
+
+def evaluate_all_metrics(y_true, y_pred, max_dtw_samples=1000):
+    """
+    Compute all evaluation metrics on (y_true, y_pred) arrays of shape (N, horizon).
+
+    Metrics:
+      - MAE, RMSE, MAPE (standard)
+      - DTW: Dynamic Time Warping distance (shape similarity)
+      - DDTW: Derivative DTW (trend/shape similarity)
+      - CrossCorrelation: max normalized cross-corr (phase alignment)
+
+    DTW/DDTW are computed on a random subsample of max_dtw_samples rows for speed.
+
+    Returns:
+        dict with metric names → rounded values
+    """
+    mae = np.mean(np.abs(y_true - y_pred))
+    rmse = np.sqrt(np.mean((y_true - y_pred) ** 2))
+    y_safe = np.where(np.abs(y_true) < 1e-8, 1e-8, y_true)
+    mape = np.mean(np.abs((y_true - y_pred) / y_safe)) * 100
+
+    # Subsample for DTW/DDTW (can be expensive)
+    n = y_true.shape[0]
+    if n > max_dtw_samples:
+        idx = np.random.default_rng(42).choice(n, max_dtw_samples, replace=False)
+    else:
+        idx = np.arange(n)
+
+    dtw_vals = []
+    ddtw_vals = []
+    xcorr_vals = []
+    for i in idx:
+        dtw_vals.append(compute_dtw(y_true[i], y_pred[i]))
+        ddtw_vals.append(compute_ddtw(y_true[i], y_pred[i]))
+        xcorr_vals.append(compute_cross_correlation(y_true[i], y_pred[i]))
+
+    metrics = {
+        "MAE": round(float(mae), 4),
+        "RMSE": round(float(rmse), 4),
+        "MAPE": round(float(mape), 4),
+        "DTW": round(float(np.mean(dtw_vals)), 4),
+        "DDTW": round(float(np.mean(ddtw_vals)), 4),
+        "CrossCorrelation": round(float(np.mean(xcorr_vals)), 4),
+    }
+
+    print("═" * 50)
+    print("  Evaluation Metrics")
+    print("═" * 50)
+    for name, val in metrics.items():
+        print(f"  {name:20s}: {val}")
+    print("═" * 50)
+    return metrics
+
+
+# ============================================================================
+# VISUALIZATION FUNCTIONS
+# ============================================================================
+
+def plot_forecast_samples(y_true, y_pred, n_samples=6, title="Predicción vs Real"):
+    """
+    Plot sample forecast windows showing predicted vs actual.
+    Designed to be understandable for non-technical audiences.
+    """
+    n_total = y_true.shape[0]
+    indices = np.linspace(0, n_total - 1, n_samples, dtype=int)
+
+    n_cols = min(3, n_samples)
+    n_rows = math.ceil(n_samples / n_cols)
+    fig, axes = plt.subplots(n_rows, n_cols, figsize=(6 * n_cols, 4 * n_rows))
+    if n_samples == 1:
+        axes = np.array([axes])
+    axes = axes.flatten()
+
+    for k, idx in enumerate(indices):
+        ax = axes[k]
+        t = np.arange(y_true.shape[1])
+        ax.plot(t, y_true[idx], label='Real', color='steelblue', linewidth=2)
+        ax.plot(t, y_pred[idx], label='Predicción', color='darkorange', linewidth=2, linestyle='--')
+        ax.fill_between(t, y_true[idx], y_pred[idx], alpha=0.15, color='red')
+        mae_i = np.mean(np.abs(y_true[idx] - y_pred[idx]))
+        xcorr_i = compute_cross_correlation(y_true[idx], y_pred[idx])
+        ax.set_title(f'Ventana #{idx}  |  MAE={mae_i:.3f}  |  r={xcorr_i:.2f}', fontsize=10)
+        ax.set_xlabel('Paso de tiempo')
+        ax.set_ylabel('Valor')
+        ax.legend(fontsize=9)
+        ax.grid(True, alpha=0.3)
+
+    for j in range(len(indices), len(axes)):
+        axes[j].axis('off')
+
+    fig.suptitle(title, fontsize=14, fontweight='bold')
+    plt.tight_layout()
+    plt.show()
+    return fig
+
+
+def plot_error_over_horizon(y_true, y_pred, title="Error según horizonte de predicción"):
+    """
+    Shows how prediction error increases over the forecast horizon.
+    Very intuitive for non-technical people: 'further in the future = harder to predict'.
+    """
+    horizon = y_true.shape[1]
+    mae_per_step = np.mean(np.abs(y_true - y_pred), axis=0)
+    rmse_per_step = np.sqrt(np.mean((y_true - y_pred) ** 2, axis=0))
+
+    fig, ax1 = plt.subplots(figsize=(12, 5))
+    ax1.plot(range(horizon), mae_per_step, color='steelblue', linewidth=2, label='MAE')
+    ax1.fill_between(range(horizon), mae_per_step, alpha=0.2, color='steelblue')
+    ax1.plot(range(horizon), rmse_per_step, color='darkorange', linewidth=2, label='RMSE', linestyle='--')
+    ax1.set_xlabel('Paso en el futuro', fontsize=12)
+    ax1.set_ylabel('Error', fontsize=12)
+    ax1.set_title(title, fontsize=14, fontweight='bold')
+    ax1.legend(fontsize=11)
+    ax1.grid(True, alpha=0.3)
+    plt.tight_layout()
+    plt.show()
+    return fig
+
+
+def plot_metrics_comparison(results_dict, title="Comparación de Modelos"):
+    """
+    Bar chart comparing multiple models across all metrics.
+
+    Args:
+        results_dict: dict of {"Model Name": metrics_dict, ...}
+                      e.g. {"MOMENT": {"MAE": 0.5, "DTW": 3.2, ...}, "Moirai": {...}}
+    """
+    if not results_dict:
+        print("No hay resultados para comparar.")
+        return
+
+    model_names = list(results_dict.keys())
+    metric_names = list(list(results_dict.values())[0].keys())
+
+    # Separate CrossCorrelation (higher is better) from the rest (lower is better)
+    lower_better = [m for m in metric_names if m != "CrossCorrelation"]
+    higher_better = [m for m in metric_names if m == "CrossCorrelation"]
+
+    fig, axes = plt.subplots(1, 2 if higher_better else 1,
+                             figsize=(7 * (2 if higher_better else 1), 6))
+    if not isinstance(axes, np.ndarray):
+        axes = [axes]
+
+    # Plot 1: metrics where lower is better
+    x = np.arange(len(model_names))
+    width = 0.8 / len(lower_better)
+    for i, metric in enumerate(lower_better):
+        vals = [results_dict[m].get(metric, 0) for m in model_names]
+        axes[0].bar(x + i * width, vals, width, label=metric, alpha=0.85)
+    axes[0].set_xticks(x + width * len(lower_better) / 2)
+    axes[0].set_xticklabels(model_names, rotation=15, ha='right')
+    axes[0].set_title('Métricas de Error (↓ menor = mejor)', fontsize=12, fontweight='bold')
+    axes[0].legend()
+    axes[0].grid(True, alpha=0.3, axis='y')
+
+    # Plot 2: metrics where higher is better
+    if higher_better:
+        for i, metric in enumerate(higher_better):
+            vals = [results_dict[m].get(metric, 0) for m in model_names]
+            colors = ['#2ecc71' if v == max(vals) else '#95a5a6' for v in vals]
+            axes[1].bar(model_names, vals, color=colors, alpha=0.85)
+            for j, v in enumerate(vals):
+                axes[1].text(j, v + 0.01, f'{v:.3f}', ha='center', fontsize=10)
+        axes[1].set_title('Correlación Cruzada (↑ mayor = mejor)', fontsize=12, fontweight='bold')
+        axes[1].set_ylim(0, 1.1)
+        axes[1].grid(True, alpha=0.3, axis='y')
+
+    fig.suptitle(title, fontsize=14, fontweight='bold')
+    plt.tight_layout()
+    plt.show()
+    return fig
+
+
+def plot_subject_performance(y_true, y_pred, ids_list, title="Rendimiento por Sujeto"):
+    """
+    Per-subject performance barplot showing MAPE and CrossCorrelation.
+    Shows which subjects are easier/harder to predict.
+    """
+    ids_arr = np.array(ids_list)
+    unique_ids = sorted(set(ids_list))
+
+    mapes = []
+    xcorrs = []
+    for uid in unique_ids:
+        mask = ids_arr == uid
+        yt = y_true[mask]
+        yp = y_pred[mask]
+        mape_i = np.mean(np.abs((yt - yp) / (np.abs(yt) + 1e-8))) * 100
+        xcorr_vals = [compute_cross_correlation(yt[r], yp[r]) for r in range(min(50, len(yt)))]
+        mapes.append(mape_i)
+        xcorrs.append(np.mean(xcorr_vals))
+
+    fig, (ax1, ax2) = plt.subplots(2, 1, figsize=(max(12, len(unique_ids) * 0.8), 10))
+
+    # Short labels
+    labels = [str(uid)[-15:] for uid in unique_ids]
+
+    colors_mape = ['#e74c3c' if m > np.mean(mapes) else '#2ecc71' for m in mapes]
+    ax1.bar(labels, mapes, color=colors_mape, alpha=0.8)
+    ax1.axhline(np.mean(mapes), color='navy', linestyle='--', label=f'Promedio={np.mean(mapes):.1f}%')
+    ax1.set_title('MAPE por Sujeto (↓ menor = mejor)', fontsize=12, fontweight='bold')
+    ax1.set_ylabel('MAPE (%)')
+    ax1.legend()
+    ax1.tick_params(axis='x', rotation=45)
+    ax1.grid(True, alpha=0.3, axis='y')
+
+    colors_xcorr = ['#2ecc71' if x > np.mean(xcorrs) else '#e74c3c' for x in xcorrs]
+    ax2.bar(labels, xcorrs, color=colors_xcorr, alpha=0.8)
+    ax2.axhline(np.mean(xcorrs), color='navy', linestyle='--', label=f'Promedio={np.mean(xcorrs):.2f}')
+    ax2.set_title('Correlación Cruzada por Sujeto (↑ mayor = mejor)', fontsize=12, fontweight='bold')
+    ax2.set_ylabel('Cross-Correlation')
+    ax2.set_ylim(0, 1.1)
+    ax2.legend()
+    ax2.tick_params(axis='x', rotation=45)
+    ax2.grid(True, alpha=0.3, axis='y')
+
+    fig.suptitle(title, fontsize=14, fontweight='bold')
+    plt.tight_layout()
+    plt.show()
+    return fig
+
+
+def plot_prediction_timeline(y_true, y_pred, ids_list, inp, subject_idx=0,
+                             title="Línea de Tiempo: Real vs Predicción"):
+    """
+    Reconstructs the full timeline for a subject (non-overlapping windows)
+    and plots actual vs predicted. Uses the same logic as graphModel from modeloCreadoProfe.
+    """
+    ids_arr = np.array(ids_list)
+    unique_ids = sorted(set(ids_list))
+
+    if subject_idx >= len(unique_ids):
+        subject_idx = 0
+
+    uid = unique_ids[subject_idx]
+    mask = ids_arr == uid
+    yt = y_true[mask]
+    yp = y_pred[mask]
+
+    # Extract non-overlapping windows
+    n_windows = len(yt) // inp
+    remainder = len(yt) - n_windows * inp
+
+    real_parts = []
+    pred_parts = []
+    for i in range(n_windows):
+        idx = i * inp
+        real_parts.append(yt[idx])
+        pred_parts.append(yp[idx])
+    if remainder > 0:
+        real_parts.append(yt[-1][-remainder:])
+        pred_parts.append(yp[-1][-remainder:])
+
+    real_full = np.concatenate(real_parts)
+    pred_full = np.concatenate(pred_parts)
+
+    fig, ax = plt.subplots(figsize=(16, 5))
+    t = np.arange(len(real_full))
+    ax.plot(t, real_full, label='Real', color='steelblue', linewidth=1.5)
+    ax.plot(t, pred_full, label='Predicción', color='darkorange', linewidth=1.5, alpha=0.8)
+    ax.fill_between(t, real_full, pred_full, alpha=0.1, color='red')
+    ax.set_title(f'{title} — Sujeto: {uid}', fontsize=13, fontweight='bold')
+    ax.set_xlabel('Tiempo (pasos)')
+    ax.set_ylabel('Valor')
+    ax.legend(fontsize=11)
+    ax.grid(True, alpha=0.3)
+    plt.tight_layout()
+    plt.show()
+    return fig
 
 def loadAllFiles(folder_path):
     # --- Listar archivos Excel ---

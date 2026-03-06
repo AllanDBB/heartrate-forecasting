@@ -1,10 +1,16 @@
 import gc
+import os
+import sys
 import torch
 import torch.nn as nn
 import numpy as np
 import yaml
 from torch.utils.data import DataLoader, TensorDataset
 from torch.optim import Adam
+from tqdm import tqdm
+
+sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..'))
+import utils
 
 
 class MomentSupervisedWrapper:
@@ -13,8 +19,14 @@ class MomentSupervisedWrapper:
 
     MOMENT's forecasting head is a randomly-initialized linear layer,
     so it MUST be fine-tuned with fit() before predict() is useful.
-    The T5 encoder and patch-embedding layers are frozen; only the
-    linear head is trained (fast, typically 1 epoch is enough).
+
+    Speed strategy
+    --------------
+    The T5 encoder is frozen (0.3B params). Running it on every training
+    batch is the main bottleneck. fit() therefore pre-computes the encoder
+    outputs ONCE (in no_grad mode) and caches them in CPU RAM. Subsequent
+    epoch iterations only execute the tiny linear forecasting head, making
+    training orders of magnitude faster.
 
     Context length is fixed at 512. Input sequences of length < 512
     are left-padded with zeros; the input_mask marks valid timesteps.
@@ -74,6 +86,42 @@ class MomentSupervisedWrapper:
         mask_tensor = torch.tensor(mask, dtype=torch.float32)
         return x_tensor, mask_tensor
 
+    def _precompute_head_inputs(self, X: np.ndarray) -> torch.Tensor:
+        """
+        Run the frozen encoder ONCE in no_grad mode and capture the tensor
+        that MOMENT passes to its forecasting head (via a forward hook).
+
+        Returns:
+            head_inputs: CPU tensor, shape depends on architecture
+                         (typically (N, 1, n_patches * d_model) for MOMENT-large)
+        """
+        x_tensor, mask_tensor = self._prepare_inputs(X)
+        loader = DataLoader(
+            TensorDataset(x_tensor, mask_tensor),
+            batch_size=self.batch_size,
+        )
+
+        captured = []
+
+        def _hook(module, inp, out):   # noqa: ARG001
+            # inp[0] is the tensor fed into model.head
+            captured.append(inp[0].detach().cpu())
+
+        handle = self.model.head.register_forward_hook(_hook)
+
+        self.model.eval()
+        with torch.no_grad():
+            for x_batch, mask_batch in tqdm(loader, desc="Pre-computing embeddings", leave=False):
+                self.model(
+                    x_enc=x_batch.to(self.device),
+                    input_mask=mask_batch.to(self.device),
+                )
+                gc.collect()
+                torch.cuda.empty_cache()
+
+        handle.remove()
+        return torch.cat(captured, dim=0)   # (N, ...)
+
     # ------------------------------------------------------------------
     # Public API
     # ------------------------------------------------------------------
@@ -81,39 +129,51 @@ class MomentSupervisedWrapper:
     def fit(self, X_train: np.ndarray, y_train: np.ndarray):
         """
         Fine-tune the linear forecasting head on (X_train, y_train).
-        The encoder and embedder remain frozen.
+
+        Step 1 — Pre-compute encoder embeddings (runs encoder ONCE, no grad).
+        Step 2 — Train only model.head on the cached embeddings (very fast).
 
         Args:
             X_train: (N, input_size)  context sequences
             y_train: (N, output_size) target forecasts
         """
-        x_tensor, mask_tensor = self._prepare_inputs(X_train)
-        # Target shape expected by the model: (N, 1, output_size)
+        print("Paso 1/2: Pre-computando embeddings del encoder (solo una vez)…")
+        head_inputs = self._precompute_head_inputs(X_train)  # cached on CPU
+
+        # MOMENT outputs (B, 1, output_size); match target shape
         y_tensor = torch.tensor(y_train, dtype=torch.float32).unsqueeze(1)
 
-        dataset = TensorDataset(x_tensor, mask_tensor, y_tensor)
+        dataset = TensorDataset(head_inputs, y_tensor)
         loader = DataLoader(dataset, batch_size=self.batch_size, shuffle=True)
 
         criterion = nn.MSELoss().to(self.device)
-        optimizer = Adam(self.model.parameters(), lr=self.lr)
+        # Only pass head parameters — encoder is frozen and not involved
+        optimizer = Adam(self.model.head.parameters(), lr=self.lr)
 
-        self.model.train()
+        print("Paso 2/2: Entrenando cabeza lineal…")
+        self.model.head.train()
+        scaler = torch.cuda.amp.GradScaler()
+
         for epoch in range(self.epochs):
             total_loss = 0.0
-            for x_batch, mask_batch, y_batch in loader:
-                x_batch = x_batch.to(self.device)
-                mask_batch = mask_batch.to(self.device)
+            pbar = tqdm(loader, desc=f"Epoch {epoch + 1}/{self.epochs}")
+            for emb_batch, y_batch in pbar:
+                emb_batch = emb_batch.to(self.device)
                 y_batch = y_batch.to(self.device)
 
                 optimizer.zero_grad()
-                output = self.model(x_enc=x_batch, input_mask=mask_batch)
-                # output.forecast shape: (B, 1, output_size)
-                loss = criterion(output.forecast, y_batch)
-                loss.backward()
-                optimizer.step()
-                total_loss += loss.item()
+                with torch.cuda.amp.autocast():
+                    forecast = self.model.head(emb_batch)   # (B, 1, output_size)
+                    loss = criterion(forecast, y_batch)
 
-                del x_batch, mask_batch, y_batch, output
+                scaler.scale(loss).backward()
+                scaler.step(optimizer)
+                scaler.update()
+
+                total_loss += loss.item()
+                pbar.set_postfix(loss=f"{loss.item():.4f}")
+
+                del emb_batch, y_batch, forecast
                 gc.collect()
                 torch.cuda.empty_cache()
 
@@ -138,7 +198,7 @@ class MomentSupervisedWrapper:
         preds = []
         self.model.eval()
         with torch.no_grad():
-            for (x_batch, mask_batch) in loader:
+            for (x_batch, mask_batch) in tqdm(loader, desc="Prediciendo"):
                 x_batch = x_batch.to(self.device)
                 mask_batch = mask_batch.to(self.device)
 
@@ -155,25 +215,7 @@ class MomentSupervisedWrapper:
 
     def evaluate(self, X: np.ndarray, y_true: np.ndarray) -> dict:
         """
-        Evaluate MAE, RMSE, and MAPE.
-
-        Note: MAPE is unreliable on standardized (zero-mean) data because
-        the denominator can be zero or near-zero. Rely on MAE and RMSE.
+        Evaluate with all metrics: MAE, RMSE, MAPE, DTW, DDTW, CrossCorrelation.
         """
         y_pred = self.predict(X)
-
-        mae = np.mean(np.abs(y_true - y_pred))
-        rmse = np.sqrt(np.mean((y_true - y_pred) ** 2))
-        mape = np.mean(np.abs((y_true - y_pred) / (y_true + 1e-8))) * 100
-
-        metrics = {
-            "MAE": round(float(mae), 4),
-            "RMSE": round(float(rmse), 4),
-            "MAPE": round(float(mape), 4),
-        }
-
-        print("Evaluation Metrics:")
-        for metric, value in metrics.items():
-            print(f"{metric}: {value}")
-
-        return metrics
+        return utils.evaluate_all_metrics(y_true, y_pred)
