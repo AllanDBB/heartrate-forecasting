@@ -3,7 +3,10 @@ import os
 import sys
 import torch
 import torch.nn as nn
-import torchvision  # must be imported before uni2ts to register torchvision ops
+try:
+    import torchvision  # sometimes needed before uni2ts to register ops
+except ImportError:
+    pass
 import numpy as np
 import yaml
 import pandas as pd
@@ -88,16 +91,43 @@ class MoiraiSupervisedWrapper:
         self.num_samples = config['model']['num_samples']
         self.device = config['model'].get('device', 'cuda')
 
-        model = MoiraiForecast(
-            module=MoiraiModule.from_pretrained(config['model']['name']),
-            prediction_length=self.output_size,
-            context_length=self.input_size,
-            patch_size=config['model']['patch_size'],
-            num_samples=self.num_samples,
-            target_dim=1,
-            feat_dynamic_real_dim=0,
-            past_feat_dynamic_real_dim=0,
-        )
+        # Resolve patch_size: must be an int from {8,16,32,64,128}
+        raw_ps = config['model']['patch_size']
+        if isinstance(raw_ps, str) and raw_ps.lower() == 'auto':
+            # Pick largest patch_size that divides context_length
+            for ps in [64, 32, 16, 8]:
+                if self.input_size % ps == 0:
+                    raw_ps = ps
+                    break
+            else:
+                raw_ps = 32
+            print(f"  patch_size auto → {raw_ps}")
+        patch_size = int(raw_ps)
+
+        module = MoiraiModule.from_pretrained(config['model']['name'])
+
+        try:
+            model = MoiraiForecast(
+                module=module,
+                prediction_length=self.output_size,
+                context_length=self.input_size,
+                patch_size=patch_size,
+                num_samples=self.num_samples,
+                target_dim=1,
+                feat_dynamic_real_dim=0,
+                past_feat_dynamic_real_dim=0,
+            )
+        except (ValueError, TypeError) as e:
+            print(f"  ⚠ MoiraiForecast init falló con patch_size={patch_size}: {e}")
+            print(f"  Reintentando sin feat dims explícitos...")
+            model = MoiraiForecast(
+                module=module,
+                prediction_length=self.output_size,
+                context_length=self.input_size,
+                patch_size=patch_size,
+                num_samples=self.num_samples,
+                target_dim=1,
+            )
 
         self.predictor = model.create_predictor(batch_size=self.batch_size)
         self.adapter = None  # set after fit()
