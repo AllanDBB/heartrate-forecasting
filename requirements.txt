@@ -1,24 +1,19 @@
-# Core
-numpy
-pandas
+# Core — solo dependencias que NO rompen Colab.
+# Las dependencias específicas de cada modelo se instalan en su celda del notebook.
 scikit-learn
 joblib
 openpyxl
 matplotlib
+pyyaml
 
-# PyTorch (MOMENT, Moirai, Time-MoE)
+# PyTorch (ya viene en Colab, pero por si acaso)
 torch
 torchvision
 transformers
 accelerate
 huggingface_hub
 
-# Moirai
-uni2ts
-gluonts
-
-# MOMENT — se instala en su celda del notebook:
-#   pip install git+https://github.com/moment-timeseries-foundation-model/moment.git
-
-# TCN (modelo del profesor) — se instala en su celda del notebook:
-#   pip install keras-tcn tensorflow
+# Las siguientes se instalan en su celda respectiva del notebook:
+#   MOMENT:  pip install git+https://github.com/moment-timeseries-foundation-model/moment.git
+#   Moirai:  pip install uni2ts gluonts einops
+#   TCN:     pip install keras-tcn tensorflow
