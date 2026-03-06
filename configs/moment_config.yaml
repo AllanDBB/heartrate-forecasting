@@ -9,5 +9,8 @@ forecasting:
   context_length: 512  # MOMENT's fixed internal context length (pads input_size -> 512)
 
 training:
-  epochs: 1            # fine-tune linear head for 1 epoch (encoder stays frozen)
-  lr: 1.0e-4
+  epochs: 5            # más épocas para convergencia
+  lr: 5.0e-4           # learning rate para la cabeza
+  encoder_lr: 1.0e-5   # learning rate bajo para capas del encoder (si se descongelan)
+  unfreeze_last_n: 2   # descongelar las últimas N capas del encoder T5
+  warmup_ratio: 0.1    # warmup coseno
