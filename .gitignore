@@ -3,6 +3,9 @@ __pycache__/
 *.py[codz]
 *$py.class
 
+# Model prediction cache (Colab)
+cache/
+
 # C extensions
 *.so
 
