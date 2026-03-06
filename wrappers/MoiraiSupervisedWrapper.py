@@ -3,10 +3,6 @@ import os
 import sys
 import torch
 import torch.nn as nn
-try:
-    import torchvision  # sometimes needed before uni2ts to register ops
-except ImportError:
-    pass
 import numpy as np
 import yaml
 import pandas as pd
