@@ -8,6 +8,58 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..'))
 import utils
 
 
+_NBEATS_BLOCK_CLASS = None
+
+
+def _get_nbeats_block_class():
+    global _NBEATS_BLOCK_CLASS
+    if _NBEATS_BLOCK_CLASS is not None:
+        return _NBEATS_BLOCK_CLASS
+
+    import tensorflow as tf
+    from tensorflow.keras.layers import Dense, Layer
+
+    @tf.keras.utils.register_keras_serializable(package='Custom', name='NBeatsBlock')
+    class NBeatsBlock(Layer):
+        def __init__(self, units=256, expansion=200, **kwargs):
+            super().__init__(**kwargs)
+            self.units = units
+            self.expansion = expansion
+            self.hidden_layers = [
+                Dense(units, activation='relu') for _ in range(4)
+            ]
+            self.theta = Dense(expansion)
+
+        def build(self, input_shape):
+            current_shape = tf.TensorShape(input_shape)
+            for layer in self.hidden_layers:
+                layer.build(current_shape)
+                current_shape = tf.TensorShape([current_shape[0], self.units])
+            self.theta.build(current_shape)
+            super().build(input_shape)
+
+        def call(self, inputs):
+            x = inputs
+            for layer in self.hidden_layers:
+                x = layer(x)
+            return self.theta(x)
+
+        def compute_output_shape(self, input_shape):
+            input_shape = tf.TensorShape(input_shape).as_list()
+            return tf.TensorShape([input_shape[0], self.expansion])
+
+        def get_config(self):
+            config = super().get_config()
+            config.update({
+                'units': self.units,
+                'expansion': self.expansion,
+            })
+            return config
+
+    _NBEATS_BLOCK_CLASS = NBeatsBlock
+    return _NBEATS_BLOCK_CLASS
+
+
 class NBeatsSupervisedWrapper:
     """
     Wrapper for a lightweight N-BEATS style Keras model.
@@ -50,32 +102,9 @@ class NBeatsSupervisedWrapper:
     def _build_model(self):
         import tensorflow as tf
         from tensorflow.keras import Model, Input
-        from tensorflow.keras.layers import Add, Dense, Flatten, Layer
+        from tensorflow.keras.layers import Add, Flatten
 
-        @tf.keras.utils.register_keras_serializable(package='Custom', name='NBeatsBlock')
-        class NBeatsBlock(Layer):
-            def __init__(self, units=256, expansion=200, **kwargs):
-                super().__init__(**kwargs)
-                self.units = units
-                self.expansion = expansion
-                self.hidden_layers = [
-                    Dense(units, activation='relu') for _ in range(4)
-                ]
-                self.theta = Dense(expansion)
-
-            def call(self, inputs):
-                x = inputs
-                for layer in self.hidden_layers:
-                    x = layer(x)
-                return self.theta(x)
-
-            def get_config(self):
-                config = super().get_config()
-                config.update({
-                    'units': self.units,
-                    'expansion': self.expansion,
-                })
-                return config
+        NBeatsBlock = _get_nbeats_block_class()
 
         inputs = Input(shape=(self.input_size, 1))
         x = Flatten()(inputs)
@@ -97,32 +126,7 @@ class NBeatsSupervisedWrapper:
     def load(self, path: str):
         """Load a pretrained .keras model."""
         import tensorflow as tf
-        from tensorflow.keras.layers import Dense, Layer
-
-        @tf.keras.utils.register_keras_serializable(package='Custom', name='NBeatsBlock')
-        class NBeatsBlock(Layer):
-            def __init__(self, units=256, expansion=200, **kwargs):
-                super().__init__(**kwargs)
-                self.units = units
-                self.expansion = expansion
-                self.hidden_layers = [
-                    Dense(units, activation='relu') for _ in range(4)
-                ]
-                self.theta = Dense(expansion)
-
-            def call(self, inputs):
-                x = inputs
-                for layer in self.hidden_layers:
-                    x = layer(x)
-                return self.theta(x)
-
-            def get_config(self):
-                config = super().get_config()
-                config.update({
-                    'units': self.units,
-                    'expansion': self.expansion,
-                })
-                return config
+        NBeatsBlock = _get_nbeats_block_class()
 
         self.model = tf.keras.models.load_model(
             path,
