@@ -3,26 +3,27 @@ Ensemble forecasting wrapper.
 
 Combines multiple model predictions using:
   1. Simple average
-  2. Weighted average (optimized on validation set)
-  3. Stacking meta-learner (Ridge regression trained on OOF predictions)
+  2. Weighted average (optimized on validation predictions)
+  3. Stacking meta-learner (Ridge regression trained on validation predictions)
   4. Optional ARIMA/ETS classical baselines blended in
 
 Usage in notebook:
     from wrappers.EnsembleWrapper import EnsembleWrapper
     ens = EnsembleWrapper()
-    ens.add_model("MOMENT", y_pred_moment)
-    ens.add_model("Moirai", y_pred_moirai)
-    ens.add_model("TCN", y_pred_tcn)
-    ens.add_arima_baseline(X_test)         # optional ARIMA component
-    ens.fit_weights(y_test_val)            # learn optimal weights (or stacking)
+    ens.add_model("MOMENT", y_pred_test_moment, split="eval")
+    ens.add_model("MOMENT", y_pred_val_moment, split="fit")
+    ens.add_model("TCN", y_pred_test_tcn, split="eval")
+    ens.add_model("TCN", y_pred_val_tcn, split="fit")
+    results = ens.compare_methods(y_true_eval=y_test, y_true_fit=y_val)
     y_pred_ens = ens.predict()
     metrics = ens.evaluate(y_test)
 """
 
+import copy
 import numpy as np
 import os
 import sys
-from typing import Dict, Optional
+from typing import Dict, List, Optional
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..'))
 import utils
@@ -34,33 +35,155 @@ class EnsembleWrapper:
 
     Supports:
       - Simple average (no fitting required)
-      - Weighted average (weights optimized via scipy or grid search)
-      - Stacking (Ridge regression meta-learner)
+      - Weighted average (weights optimized on validation data)
+      - Stacking (Ridge regression meta-learner trained on validation data)
       - ARIMA/exponential smoothing as additional base models
+
+    Conventions:
+      - split='fit': predictions aligned with validation data used to learn weights
+      - split='eval': predictions aligned with the final evaluation set (typically test)
     """
 
     def __init__(self):
-        self.models: Dict[str, np.ndarray] = {}  # name → predictions (N, horizon)
+        self.models: Dict[str, np.ndarray] = {}      # eval predictions: name -> (N, horizon)
+        self.fit_models: Dict[str, np.ndarray] = {}  # fit predictions:  name -> (N, horizon)
         self.weights: Optional[np.ndarray] = None
         self.meta_model = None
         self.method = 'average'
+        self.active_model_names: Optional[List[str]] = None
+
+    # ------------------------------------------------------------------
+    # Helpers
+    # ------------------------------------------------------------------
+
+    def _get_store(self, split: str) -> Dict[str, np.ndarray]:
+        if split == 'eval':
+            return self.models
+        if split == 'fit':
+            return self.fit_models
+        raise ValueError(f"Split desconocido: {split}. Usa 'eval' o 'fit'.")
+
+    def _stack_predictions(self, store: Dict[str, np.ndarray], names: List[str]) -> np.ndarray:
+        return np.stack([store[name] for name in names], axis=0)
+
+    def _validate_target_shape(self, y_true: np.ndarray, store: Dict[str, np.ndarray], names: List[str]):
+        if not names:
+            raise ValueError("No hay modelos disponibles para el ensemble.")
+
+        ref_shape = store[names[0]].shape
+        if y_true.shape != ref_shape:
+            raise ValueError(
+                f"y_true={y_true.shape} no coincide con las predicciones {ref_shape}."
+            )
+
+        for name in names[1:]:
+            if store[name].shape != ref_shape:
+                raise ValueError(
+                    f"Las predicciones del modelo {name} tienen shape {store[name].shape}; "
+                    f"se esperaba {ref_shape}."
+                )
+
+    def _shared_model_names(self) -> List[str]:
+        eval_names = list(self.models.keys())
+        common_names = [name for name in eval_names if name in self.fit_models]
+
+        if not common_names:
+            raise ValueError(
+                "No hay modelos con predicciones en split='fit' y split='eval'. "
+                "Agrega predicciones de validacion con add_model(..., split='fit')."
+            )
+
+        dropped_eval = [name for name in eval_names if name not in self.fit_models]
+        dropped_fit = [name for name in self.fit_models if name not in self.models]
+
+        if dropped_eval:
+            print(
+                "  Aviso: se omiten en metodos ajustados por no tener split='fit': "
+                f"{dropped_eval}"
+            )
+        if dropped_fit:
+            print(
+                "  Aviso: se omiten en evaluacion por no tener split='eval': "
+                f"{dropped_fit}"
+            )
+
+        return common_names
+
+    def _objective_value(self, y_true: np.ndarray, y_pred: np.ndarray, metric: str) -> float:
+        metric = metric.upper()
+        if metric == 'MSE':
+            return float(np.mean((y_pred - y_true) ** 2))
+        if metric == 'MAPE':
+            y_safe = np.maximum(np.abs(y_true), 1e-8)
+            return float(np.mean(np.abs((y_true - y_pred) / y_safe)) * 100)
+        raise ValueError(f"Metrica objetivo desconocida: {metric}")
+
+    def _snapshot_state(self) -> dict:
+        return {
+            'method': self.method,
+            'weights': None if self.weights is None else self.weights.copy(),
+            'meta_model': copy.deepcopy(self.meta_model),
+            'active_model_names': None if self.active_model_names is None else list(self.active_model_names),
+        }
+
+    def _restore_state(self, state: dict):
+        self.method = state['method']
+        self.weights = state['weights']
+        self.meta_model = state['meta_model']
+        self.active_model_names = state['active_model_names']
+
+    def _select_best_method(self, results: Dict[str, dict], metric: str) -> str:
+        if not results:
+            raise ValueError("No hay resultados para seleccionar el mejor metodo.")
+
+        metric = metric
+        sample_metrics = next(iter(results.values()))
+        if metric not in sample_metrics:
+            raise ValueError(f"La metrica {metric} no esta disponible en los resultados.")
+
+        if metric == 'Correlation':
+            return max(
+                results,
+                key=lambda name: (
+                    results[name][metric],
+                    -results[name].get('MAPE', float('inf')),
+                    -results[name].get('DTW', float('inf')),
+                ),
+            )
+
+        return min(
+            results,
+            key=lambda name: (
+                results[name][metric],
+                -results[name].get('Correlation', float('-inf')),
+                results[name].get('DTW', float('inf')),
+            ),
+        )
 
     # ------------------------------------------------------------------
     # Add base model predictions
     # ------------------------------------------------------------------
 
-    def add_model(self, name: str, predictions: np.ndarray):
+    def add_model(self, name: str, predictions: np.ndarray, split: str = 'eval'):
         """
         Add a model's predictions to the ensemble.
 
         Args:
             name: model identifier (e.g. "MOMENT", "Moirai", "TCN")
             predictions: (N, horizon) numpy array
+            split: 'eval' or 'fit'
         """
-        self.models[name] = predictions.copy()
-        print(f"  + {name}: {predictions.shape}")
+        store = self._get_store(split)
+        store[name] = predictions.copy()
+        print(f"  + {name} [{split}]: {predictions.shape}")
 
-    def add_arima_baseline(self, X: np.ndarray, order=(5, 1, 0), horizon: int = 200):
+    def add_arima_baseline(
+        self,
+        X: np.ndarray,
+        order=(5, 1, 0),
+        horizon: int = 200,
+        split: str = 'eval',
+    ):
         """
         Generate ARIMA forecasts as an additional ensemble member.
         Uses a simple per-sample ARIMA fit (statsmodels).
@@ -70,7 +193,7 @@ class EnsembleWrapper:
         try:
             from statsmodels.tsa.arima.model import ARIMA
         except ImportError:
-            print("  ⚠ statsmodels no disponible. Instalando...")
+            print("  statsmodels no disponible. Instalando...")
             import subprocess
             subprocess.check_call([sys.executable, '-m', 'pip', 'install', '-q', 'statsmodels'])
             from statsmodels.tsa.arima.model import ARIMA
@@ -78,7 +201,7 @@ class EnsembleWrapper:
         n = X.shape[0]
         preds = np.zeros((n, horizon))
 
-        print(f"  Generando ARIMA{order} baseline para {n} muestras...")
+        print(f"  Generando ARIMA{order} baseline para {n} muestras [{split}]...")
         for i in range(n):
             try:
                 model = ARIMA(X[i], order=order)
@@ -86,16 +209,20 @@ class EnsembleWrapper:
                 forecast = fitted.forecast(steps=horizon)
                 preds[i] = forecast
             except Exception:
-                # Fallback: extend last value (naive forecast)
                 preds[i] = X[i, -1]
 
             if (i + 1) % 500 == 0 or i == n - 1:
-                print(f"    ARIMA: {i+1}/{n}")
+                print(f"    ARIMA: {i + 1}/{n}")
 
-        self.models["ARIMA"] = preds
-        print(f"  + ARIMA{order}: {preds.shape}")
+        self._get_store(split)["ARIMA"] = preds
+        print(f"  + ARIMA{order} [{split}]: {preds.shape}")
 
-    def add_exponential_smoothing_baseline(self, X: np.ndarray, horizon: int = 200):
+    def add_exponential_smoothing_baseline(
+        self,
+        X: np.ndarray,
+        horizon: int = 200,
+        split: str = 'eval',
+    ):
         """
         Simple exponential smoothing as a baseline.
         Much faster than ARIMA.
@@ -110,7 +237,7 @@ class EnsembleWrapper:
         n = X.shape[0]
         preds = np.zeros((n, horizon))
 
-        print(f"  Generando Exp. Smoothing baseline para {n} muestras...")
+        print(f"  Generando Exp. Smoothing baseline para {n} muestras [{split}]...")
         for i in range(n):
             try:
                 model = SimpleExpSmoothing(X[i]).fit(optimized=True)
@@ -119,98 +246,122 @@ class EnsembleWrapper:
                 preds[i] = X[i, -1]
 
             if (i + 1) % 500 == 0 or i == n - 1:
-                print(f"    ExpSmoothing: {i+1}/{n}")
+                print(f"    ExpSmoothing: {i + 1}/{n}")
 
-        self.models["ExpSmoothing"] = preds
-        print(f"  + ExpSmoothing: {preds.shape}")
+        self._get_store(split)["ExpSmoothing"] = preds
+        print(f"  + ExpSmoothing [{split}]: {preds.shape}")
 
     # ------------------------------------------------------------------
     # Fit ensemble weights / meta-learner
     # ------------------------------------------------------------------
 
-    def fit_weights(self, y_true: np.ndarray, method: str = 'optimize'):
+    def fit_weights(
+        self,
+        y_true: np.ndarray,
+        method: str = 'optimize',
+        objective_metric: str = 'MAPE',
+    ):
         """
-        Learn optimal ensemble weights on a set of predictions.
+        Learn ensemble parameters on validation predictions.
 
         Args:
-            y_true: (N, horizon) ground truth
+            y_true: validation target of shape (N, horizon)
             method: 'average' | 'optimize' | 'stacking'
-              - 'average':  equal weights (no fitting)
-              - 'optimize': minimize MSE via scipy optimization
-              - 'stacking': train Ridge regression on model outputs
+            objective_metric: objective used for optimized weights ('MAPE' or 'MSE')
         """
         self.method = method
-        names = list(self.models.keys())
-        n_models = len(names)
-
-        if n_models == 0:
-            raise ValueError("No se han agregado modelos al ensemble.")
-
-        print(f"\nEnsemble con {n_models} modelos: {names}")
+        self.meta_model = None
+        self.weights = None
 
         if method == 'average':
-            self.weights = np.ones(n_models) / n_models
-            print(f"  Método: promedio simple → pesos = {self.weights}")
+            if not self.models:
+                raise ValueError("No se han agregado modelos al ensemble.")
+            self.active_model_names = list(self.models.keys())
+            print(f"\nEnsemble con {len(self.active_model_names)} modelos: {self.active_model_names}")
+            print("  Metodo: promedio simple")
+            return
 
-        elif method == 'optimize':
-            self._optimize_weights(y_true, names)
+        if not self.fit_models:
+            raise ValueError(
+                "No hay predicciones split='fit' para ajustar pesos. "
+                "Agrega predicciones de validacion con add_model(..., split='fit')."
+            )
 
+        names = self._shared_model_names()
+        self._validate_target_shape(y_true, self.fit_models, names)
+        self.active_model_names = names
+
+        print(f"\nEnsemble con {len(names)} modelos ajustables: {names}")
+
+        if method == 'optimize':
+            self._optimize_weights(y_true, names, objective_metric=objective_metric)
         elif method == 'stacking':
             self._fit_stacking(y_true, names)
-
         else:
-            raise ValueError(f"Método desconocido: {method}")
+            raise ValueError(f"Metodo desconocido: {method}")
 
-    def _optimize_weights(self, y_true: np.ndarray, names: list):
-        """Optimize weights to minimize MSE using scipy."""
+    def _optimize_weights(self, y_true: np.ndarray, names: List[str], objective_metric: str = 'MAPE'):
+        """Optimize non-negative weights that sum to 1 on validation predictions."""
         from scipy.optimize import minimize
 
-        preds_stack = np.stack([self.models[n] for n in names], axis=0)  # (M, N, H)
+        preds_stack = self._stack_predictions(self.fit_models, names)
+        objective_metric = objective_metric.upper()
+
+        def normalize_weights(w):
+            w = np.abs(w)
+            total = np.sum(w)
+            if total <= 1e-12:
+                return np.ones_like(w) / len(w)
+            return w / total
 
         def objective(w):
-            w = np.abs(w) / np.sum(np.abs(w))  # normalize to sum to 1
+            w = normalize_weights(w)
             weighted = np.einsum('m,mnh->nh', w, preds_stack)
-            return np.mean((weighted - y_true) ** 2)
+            return self._objective_value(y_true, weighted, objective_metric)
 
-        # Initial: equal weights
         w0 = np.ones(len(names)) / len(names)
-        result = minimize(objective, w0, method='Nelder-Mead',
-                         options={'maxiter': 2000, 'xatol': 1e-6})
+        result = minimize(
+            objective,
+            w0,
+            method='Nelder-Mead',
+            options={'maxiter': 2000, 'xatol': 1e-6},
+        )
 
-        self.weights = np.abs(result.x) / np.sum(np.abs(result.x))
+        self.weights = normalize_weights(result.x)
 
-        print(f"  Método: optimización de pesos (MSE)")
+        print(f"  Metodo: optimizacion de pesos ({objective_metric})")
         for i, name in enumerate(names):
             print(f"    {name}: {self.weights[i]:.4f}")
 
-        # Show improvement
         avg_pred = np.mean(preds_stack, axis=0)
-        mse_avg = np.mean((avg_pred - y_true) ** 2)
-        mse_opt = result.fun
-        print(f"  MSE promedio simple: {mse_avg:.6f}")
-        print(f"  MSE pesos óptimos:  {mse_opt:.6f} ({100*(mse_avg-mse_opt)/mse_avg:.1f}% mejora)")
+        baseline_value = self._objective_value(y_true, avg_pred, objective_metric)
+        opt_pred = np.einsum('m,mnh->nh', self.weights, preds_stack)
+        opt_value = self._objective_value(y_true, opt_pred, objective_metric)
+        improvement = 0.0 if baseline_value == 0 else 100 * (baseline_value - opt_value) / baseline_value
+        print(f"  {objective_metric} promedio simple: {baseline_value:.6f}")
+        print(f"  {objective_metric} pesos optimos: {opt_value:.6f} ({improvement:.1f}% mejora)")
 
-    def _fit_stacking(self, y_true: np.ndarray, names: list):
-        """Train a Ridge regression meta-learner (stacking)."""
+    def _fit_stacking(self, y_true: np.ndarray, names: List[str]):
+        """Train a Ridge regression meta-learner on validation predictions."""
         from sklearn.linear_model import Ridge
         from sklearn.model_selection import cross_val_score
 
-        N, H = y_true.shape
+        _, horizon = y_true.shape
+        features = np.hstack([self.fit_models[name] for name in names])
 
-        # Feature matrix: for each sample, concatenate all model predictions
-        # Shape: (N, M*H) where M = number of models
-        features = np.hstack([self.models[n] for n in names])  # (N, M*H)
-
-        # Target: flatten horizon for per-step prediction
         self.meta_model = Ridge(alpha=1.0)
         self.meta_model.fit(features, y_true)
 
-        # Cross-validation score
-        scores = cross_val_score(Ridge(alpha=1.0), features, y_true,
-                                 cv=3, scoring='neg_mean_squared_error')
-        print(f"  Método: stacking (Ridge regression)")
-        print(f"  CV MSE: {-np.mean(scores):.6f} ± {np.std(scores):.6f}")
-        print(f"  Features por muestra: {features.shape[1]} ({len(names)} modelos × {H} horizonte)")
+        scores = cross_val_score(
+            Ridge(alpha=1.0),
+            features,
+            y_true,
+            cv=3,
+            scoring='neg_mean_squared_error',
+        )
+        print("  Metodo: stacking (Ridge regression)")
+        print(f"  CV MSE: {-np.mean(scores):.6f} +- {np.std(scores):.6f}")
+        print(f"  Features por muestra: {features.shape[1]} ({len(names)} modelos x {horizon} horizonte)")
 
     # ------------------------------------------------------------------
     # Predict
@@ -218,64 +369,109 @@ class EnsembleWrapper:
 
     def predict(self, model_predictions: Dict[str, np.ndarray] = None) -> np.ndarray:
         """
-        Generate ensemble predictions.
+        Generate ensemble predictions on the evaluation split.
 
         Args:
-            model_predictions: optional dict of name→predictions for new data.
-                               If None, uses predictions added via add_model().
+            model_predictions: optional dict of name -> predictions for new data.
+                               If None, uses predictions added via add_model(..., split='eval').
         Returns:
             (N, horizon) numpy array
         """
         preds = model_predictions or self.models
-        names = list(preds.keys())
+        if not preds:
+            raise ValueError("No hay predicciones disponibles para evaluar el ensemble.")
+
+        names = self.active_model_names or list(preds.keys())
+        missing = [name for name in names if name not in preds]
+        if missing:
+            raise ValueError(
+                "Faltan predicciones para algunos modelos activos en evaluacion: "
+                f"{missing}"
+            )
 
         if self.method == 'stacking' and self.meta_model is not None:
-            features = np.hstack([preds[n] for n in names])
+            features = np.hstack([preds[name] for name in names])
             return self.meta_model.predict(features)
 
-        elif self.weights is not None:
-            preds_stack = np.stack([preds[n] for n in names], axis=0)
+        if self.weights is not None:
+            preds_stack = self._stack_predictions(preds, names)
             return np.einsum('m,mnh->nh', self.weights, preds_stack)
 
-        else:
-            # Default: simple average
-            preds_stack = np.stack([preds[n] for n in names], axis=0)
-            return np.mean(preds_stack, axis=0)
+        preds_stack = self._stack_predictions(preds, names)
+        return np.mean(preds_stack, axis=0)
 
     # ------------------------------------------------------------------
     # Evaluate
     # ------------------------------------------------------------------
 
-    def evaluate(self, y_true: np.ndarray,
-                 model_predictions: Dict[str, np.ndarray] = None) -> dict:
-        """Evaluate ensemble with all metrics."""
+    def evaluate(self, y_true: np.ndarray, model_predictions: Dict[str, np.ndarray] = None) -> dict:
+        """Evaluate ensemble with the paper metrics."""
         y_pred = self.predict(model_predictions)
         return utils.evaluate_all_metrics(y_true, y_pred)
 
-    def compare_methods(self, y_true: np.ndarray) -> dict:
+    def compare_methods(
+        self,
+        y_true_eval: np.ndarray,
+        y_true_fit: np.ndarray = None,
+        select_by: str = 'MAPE',
+        objective_metric: str = 'MAPE',
+    ) -> dict:
         """
-        Compare all ensemble methods: average, optimized weights, stacking.
-        Returns dict of method → metrics.
+        Compare ensemble methods without leaking test data into fitted methods.
+
+        Args:
+            y_true_eval: target for final evaluation (typically test)
+            y_true_fit: target for weight/meta-model fitting (typically validation)
+            select_by: metric used to keep the best method active after comparison
+            objective_metric: objective used by weighted averaging ('MAPE' or 'MSE')
+
+        Returns:
+            dict of method -> metrics
         """
+        if not self.models:
+            raise ValueError("No se han agregado predicciones split='eval' al ensemble.")
+
         results = {}
-        names = list(self.models.keys())
+        snapshots = {}
 
-        # 1. Simple average
-        preds_stack = np.stack([self.models[n] for n in names], axis=0)
-        y_avg = np.mean(preds_stack, axis=0)
+        comparison_names = list(self.models.keys())
+        if y_true_fit is not None:
+            comparison_names = self._shared_model_names()
+
+        self._validate_target_shape(y_true_eval, self.models, comparison_names)
+
         print("=== Promedio Simple ===")
-        results["Ensemble (Promedio)"] = utils.evaluate_all_metrics(y_true, y_avg)
+        self.method = 'average'
+        self.weights = None
+        self.meta_model = None
+        self.active_model_names = comparison_names
+        y_avg = self.predict()
+        results["Ensemble (Promedio)"] = utils.evaluate_all_metrics(y_true_eval, y_avg)
+        snapshots["Ensemble (Promedio)"] = self._snapshot_state()
 
-        # 2. Optimized weights
-        self.fit_weights(y_true, method='optimize')
-        y_opt = self.predict()
+        if y_true_fit is None:
+            print(
+                "\nAviso: no se proporciono y_true_fit. "
+                "Se omiten pesos optimizados y stacking para evitar usar test en el ajuste."
+            )
+            best_method = self._select_best_method(results, select_by)
+            self._restore_state(snapshots[best_method])
+            print(f"Metodo activo tras compare_methods: {best_method}")
+            return results
+
         print("\n=== Pesos Optimizados ===")
-        results["Ensemble (Pesos Óptimos)"] = utils.evaluate_all_metrics(y_true, y_opt)
+        self.fit_weights(y_true_fit, method='optimize', objective_metric=objective_metric)
+        y_opt = self.predict()
+        results["Ensemble (Pesos Optimos)"] = utils.evaluate_all_metrics(y_true_eval, y_opt)
+        snapshots["Ensemble (Pesos Optimos)"] = self._snapshot_state()
 
-        # 3. Stacking
-        self.fit_weights(y_true, method='stacking')
-        y_stack = self.predict()
         print("\n=== Stacking (Ridge) ===")
-        results["Ensemble (Stacking)"] = utils.evaluate_all_metrics(y_true, y_stack)
+        self.fit_weights(y_true_fit, method='stacking', objective_metric=objective_metric)
+        y_stack = self.predict()
+        results["Ensemble (Stacking)"] = utils.evaluate_all_metrics(y_true_eval, y_stack)
+        snapshots["Ensemble (Stacking)"] = self._snapshot_state()
 
+        best_method = self._select_best_method(results, select_by)
+        self._restore_state(snapshots[best_method])
+        print(f"\nMetodo activo tras compare_methods: {best_method} (segun {select_by})")
         return results

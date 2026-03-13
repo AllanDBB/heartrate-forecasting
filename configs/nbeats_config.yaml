@@ -1,0 +1,17 @@
+model:
+  pretrained_path: "modelos/nbeats_0.keras"
+
+architecture:
+  blocks: 2
+  units: 256
+  expansion: 200
+
+forecasting:
+  input_size: 200
+  output_size: 200
+
+training:
+  batch_size: 25
+  epochs: 40
+  lr: 0.001
+  patience: 3

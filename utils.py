@@ -11,7 +11,7 @@ from sklearn.preprocessing import MinMaxScaler
 
 
 # ============================================================================
-# ADVANCED EVALUATION METRICS: DTW, DDTW, Cross-Correlation
+# EVALUATION METRICS: DTW, Pearson Correlation, MAPE
 # ============================================================================
 
 def _dtw_distance(s1, s2, window=None):
@@ -44,19 +44,6 @@ def _dtw_distance(s1, s2, window=None):
     return np.sqrt(D[n, m])
 
 
-def _derivative(s):
-    """
-    Compute approximate derivative for DDTW (Keogh & Pazzani, 2001).
-    d(x_i) = ((x_i - x_{i-1}) + (x_{i+1} - x_{i-1}) / 2) / 2
-    """
-    d = np.zeros(len(s))
-    for i in range(1, len(s) - 1):
-        d[i] = ((s[i] - s[i - 1]) + (s[i + 1] - s[i - 1]) / 2.0) / 2.0
-    d[0] = d[1]
-    d[-1] = d[-2]
-    return d
-
-
 def compute_dtw(y_true_row, y_pred_row, window=20):
     """
     DTW distance between a single (true, pred) pair.
@@ -64,78 +51,97 @@ def compute_dtw(y_true_row, y_pred_row, window=20):
     return _dtw_distance(y_true_row, y_pred_row, window=window)
 
 
-def compute_ddtw(y_true_row, y_pred_row, window=20):
+def compute_correlation(y_true_row, y_pred_row, eps=1e-8):
     """
-    Derivative Dynamic Time Warping: DTW on the approximate derivatives.
-    Captures shape similarity independent of amplitude differences.
+    Pearson correlation for one forecast window.
+
+    If one of the windows is constant, Pearson is undefined. For reporting:
+      - return 1.0 if both windows are effectively identical
+      - return 0.0 otherwise
     """
-    d_true = _derivative(y_true_row)
-    d_pred = _derivative(y_pred_row)
-    return _dtw_distance(d_true, d_pred, window=window)
+    y_true_row = np.asarray(y_true_row, dtype=float)
+    y_pred_row = np.asarray(y_pred_row, dtype=float)
+
+    true_centered = y_true_row - np.mean(y_true_row)
+    pred_centered = y_pred_row - np.mean(y_pred_row)
+    denom = np.sqrt(np.sum(true_centered ** 2) * np.sum(pred_centered ** 2))
+
+    if denom <= eps:
+        return 1.0 if np.allclose(y_true_row, y_pred_row, atol=eps, rtol=0.0) else 0.0
+
+    corr = np.sum(true_centered * pred_centered) / denom
+    return float(np.clip(corr, -1.0, 1.0))
 
 
-def compute_cross_correlation(y_true_row, y_pred_row):
+def compute_correlations_for_all_windows(y_true, y_pred, eps=1e-8):
     """
-    Maximum normalized cross-correlation between two 1D sequences.
-    Returns a value in [-1, 1] where 1 = perfect alignment.
+    Pearson correlation computed independently for every forecast window.
     """
-    s1 = y_true_row - np.mean(y_true_row)
-    s2 = y_pred_row - np.mean(y_pred_row)
-    norm = (np.std(y_true_row) * np.std(y_pred_row) + 1e-8) * len(y_true_row)
-    correlation = np.correlate(s1, s2, mode='full') / norm
-    return np.max(correlation)
+    y_true = np.asarray(y_true, dtype=float)
+    y_pred = np.asarray(y_pred, dtype=float)
+
+    true_centered = y_true - np.mean(y_true, axis=1, keepdims=True)
+    pred_centered = y_pred - np.mean(y_pred, axis=1, keepdims=True)
+    numerator = np.sum(true_centered * pred_centered, axis=1)
+    denominator = np.sqrt(
+        np.sum(true_centered ** 2, axis=1) * np.sum(pred_centered ** 2, axis=1)
+    )
+
+    corr = np.zeros(y_true.shape[0], dtype=float)
+    valid = denominator > eps
+    corr[valid] = numerator[valid] / denominator[valid]
+
+    equal_constant = (~valid) & np.all(
+        np.isclose(y_true, y_pred, atol=eps, rtol=0.0), axis=1
+    )
+    corr[equal_constant] = 1.0
+    return np.clip(corr, -1.0, 1.0)
 
 
-def evaluate_all_metrics(y_true, y_pred, max_dtw_samples=1000):
+def evaluate_all_metrics(y_true, y_pred, dtw_window=20):
     """
-    Compute all evaluation metrics on (y_true, y_pred) arrays of shape (N, horizon).
+    Compute the paper metrics on (y_true, y_pred) arrays of shape (N, horizon).
 
     Metrics:
-      - MAE, RMSE, MAPE (standard)
-      - DTW: Dynamic Time Warping distance (shape similarity)
-      - DDTW: Derivative DTW (trend/shape similarity)
-      - CrossCorrelation: max normalized cross-corr (phase alignment)
+      - MAPE: mean absolute percentage error across all forecast points
+      - DTW: mean DTW distance across all forecast windows
+      - Correlation: mean Pearson correlation across all forecast windows
 
-    DTW/DDTW are computed on a random subsample of max_dtw_samples rows for speed.
 
     Returns:
-        dict with metric names → rounded values
+        dict with metric names -> rounded values
     """
-    mae = np.mean(np.abs(y_true - y_pred))
-    rmse = np.sqrt(np.mean((y_true - y_pred) ** 2))
-    y_safe = np.where(np.abs(y_true) < 1e-8, 1e-8, y_true)
+    y_true = np.asarray(y_true, dtype=float)
+    y_pred = np.asarray(y_pred, dtype=float)
+
+    if y_true.shape != y_pred.shape:
+        raise ValueError(
+            f"Shape mismatch en evaluate_all_metrics: y_true={y_true.shape}, y_pred={y_pred.shape}"
+        )
+    if y_true.ndim != 2:
+        raise ValueError(
+            f"evaluate_all_metrics espera arrays 2D (N, horizon). Recibido ndim={y_true.ndim}"
+        )
+
+    y_safe = np.maximum(np.abs(y_true), 1e-8)
     mape = np.mean(np.abs((y_true - y_pred) / y_safe)) * 100
 
-    # Subsample for DTW/DDTW (can be expensive)
-    n = y_true.shape[0]
-    if n > max_dtw_samples:
-        idx = np.random.default_rng(42).choice(n, max_dtw_samples, replace=False)
-    else:
-        idx = np.arange(n)
-
-    dtw_vals = []
-    ddtw_vals = []
-    xcorr_vals = []
-    for i in idx:
-        dtw_vals.append(compute_dtw(y_true[i], y_pred[i]))
-        ddtw_vals.append(compute_ddtw(y_true[i], y_pred[i]))
-        xcorr_vals.append(compute_cross_correlation(y_true[i], y_pred[i]))
+    n_windows = y_true.shape[0]
+    dtw_vals = [compute_dtw(y_true[i], y_pred[i], window=dtw_window) for i in range(n_windows)]
+    corr_vals = compute_correlations_for_all_windows(y_true, y_pred)
 
     metrics = {
-        "MAE": round(float(mae), 4),
-        "RMSE": round(float(rmse), 4),
         "MAPE": round(float(mape), 4),
         "DTW": round(float(np.mean(dtw_vals)), 4),
-        "DDTW": round(float(np.mean(ddtw_vals)), 4),
-        "CrossCorrelation": round(float(np.mean(xcorr_vals)), 4),
+        "Correlation": round(float(np.mean(corr_vals)), 4),
     }
 
-    print("═" * 50)
+    print("=" * 50)
     print("  Evaluation Metrics")
-    print("═" * 50)
+    print("=" * 50)
     for name, val in metrics.items():
         print(f"  {name:20s}: {val}")
-    print("═" * 50)
+    print("=" * 50)
     return metrics
 
 
@@ -164,9 +170,10 @@ def plot_forecast_samples(y_true, y_pred, n_samples=6, title="Predicción vs Rea
         ax.plot(t, y_true[idx], label='Real', color='steelblue', linewidth=2)
         ax.plot(t, y_pred[idx], label='Predicción', color='darkorange', linewidth=2, linestyle='--')
         ax.fill_between(t, y_true[idx], y_pred[idx], alpha=0.15, color='red')
-        mae_i = np.mean(np.abs(y_true[idx] - y_pred[idx]))
-        xcorr_i = compute_cross_correlation(y_true[idx], y_pred[idx])
-        ax.set_title(f'Ventana #{idx}  |  MAE={mae_i:.3f}  |  r={xcorr_i:.2f}', fontsize=10)
+        y_safe_i = np.maximum(np.abs(y_true[idx]), 1e-8)
+        mape_i = np.mean(np.abs((y_true[idx] - y_pred[idx]) / y_safe_i)) * 100
+        corr_i = compute_correlation(y_true[idx], y_pred[idx])
+        ax.set_title(f'Ventana #{idx}  |  MAPE={mape_i:.2f}%  |  Corr={corr_i:.2f}', fontsize=10)
         ax.set_xlabel('Paso de tiempo')
         ax.set_ylabel('Valor')
         ax.legend(fontsize=9)
@@ -210,7 +217,7 @@ def plot_metrics_comparison(results_dict, title="Comparación de Modelos"):
 
     Args:
         results_dict: dict of {"Model Name": metrics_dict, ...}
-                      e.g. {"MOMENT": {"MAE": 0.5, "DTW": 3.2, ...}, "Moirai": {...}}
+                      e.g. {"MOMENT": {"MAPE": 8.1, "DTW": 3.2, ...}, "Moirai": {...}}
     """
     if not results_dict:
         print("No hay resultados para comparar.")
@@ -219,9 +226,10 @@ def plot_metrics_comparison(results_dict, title="Comparación de Modelos"):
     model_names = list(results_dict.keys())
     metric_names = list(list(results_dict.values())[0].keys())
 
-    # Separate CrossCorrelation (higher is better) from the rest (lower is better)
-    lower_better = [m for m in metric_names if m != "CrossCorrelation"]
-    higher_better = [m for m in metric_names if m == "CrossCorrelation"]
+    # Separate correlation (higher is better) from the rest (lower is better)
+    higher_better_names = {"Correlation", "CrossCorrelation"}
+    lower_better = [m for m in metric_names if m not in higher_better_names]
+    higher_better = [m for m in metric_names if m in higher_better_names]
 
     fig, axes = plt.subplots(1, 2 if higher_better else 1,
                              figsize=(7 * (2 if higher_better else 1), 6))
@@ -248,8 +256,8 @@ def plot_metrics_comparison(results_dict, title="Comparación de Modelos"):
             axes[1].bar(model_names, vals, color=colors, alpha=0.85)
             for j, v in enumerate(vals):
                 axes[1].text(j, v + 0.01, f'{v:.3f}', ha='center', fontsize=10)
-        axes[1].set_title('Correlación Cruzada (↑ mayor = mejor)', fontsize=12, fontweight='bold')
-        axes[1].set_ylim(0, 1.1)
+        axes[1].set_title('Correlación (↑ mayor = mejor)', fontsize=12, fontweight='bold')
+        axes[1].set_ylim(-1.0, 1.1)
         axes[1].grid(True, alpha=0.3, axis='y')
 
     fig.suptitle(title, fontsize=14, fontweight='bold')
@@ -260,22 +268,22 @@ def plot_metrics_comparison(results_dict, title="Comparación de Modelos"):
 
 def plot_subject_performance(y_true, y_pred, ids_list, title="Rendimiento por Sujeto"):
     """
-    Per-subject performance barplot showing MAPE and CrossCorrelation.
+    Per-subject performance barplot showing MAPE and Correlation.
     Shows which subjects are easier/harder to predict.
     """
     ids_arr = np.array(ids_list)
     unique_ids = sorted(set(ids_list))
 
     mapes = []
-    xcorrs = []
+    corrs = []
     for uid in unique_ids:
         mask = ids_arr == uid
         yt = y_true[mask]
         yp = y_pred[mask]
         mape_i = np.mean(np.abs((yt - yp) / (np.abs(yt) + 1e-8))) * 100
-        xcorr_vals = [compute_cross_correlation(yt[r], yp[r]) for r in range(min(50, len(yt)))]
+        corr_vals = compute_correlations_for_all_windows(yt, yp)
         mapes.append(mape_i)
-        xcorrs.append(np.mean(xcorr_vals))
+        corrs.append(np.mean(corr_vals))
 
     fig, (ax1, ax2) = plt.subplots(2, 1, figsize=(max(12, len(unique_ids) * 0.8), 10))
 
@@ -291,12 +299,12 @@ def plot_subject_performance(y_true, y_pred, ids_list, title="Rendimiento por Su
     ax1.tick_params(axis='x', rotation=45)
     ax1.grid(True, alpha=0.3, axis='y')
 
-    colors_xcorr = ['#2ecc71' if x > np.mean(xcorrs) else '#e74c3c' for x in xcorrs]
-    ax2.bar(labels, xcorrs, color=colors_xcorr, alpha=0.8)
-    ax2.axhline(np.mean(xcorrs), color='navy', linestyle='--', label=f'Promedio={np.mean(xcorrs):.2f}')
-    ax2.set_title('Correlación Cruzada por Sujeto (↑ mayor = mejor)', fontsize=12, fontweight='bold')
-    ax2.set_ylabel('Cross-Correlation')
-    ax2.set_ylim(0, 1.1)
+    colors_corr = ['#2ecc71' if x > np.mean(corrs) else '#e74c3c' for x in corrs]
+    ax2.bar(labels, corrs, color=colors_corr, alpha=0.8)
+    ax2.axhline(np.mean(corrs), color='navy', linestyle='--', label=f'Promedio={np.mean(corrs):.2f}')
+    ax2.set_title('Correlación por Sujeto (↑ mayor = mejor)', fontsize=12, fontweight='bold')
+    ax2.set_ylabel('Correlation')
+    ax2.set_ylim(-1.0, 1.1)
     ax2.legend()
     ax2.tick_params(axis='x', rotation=45)
     ax2.grid(True, alpha=0.3, axis='y')
