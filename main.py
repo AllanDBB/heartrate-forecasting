@@ -285,6 +285,13 @@ def trim_ids(ids_list: List[str], length: int) -> List[str]:
     return ids_list[:length]
 
 
+def compute_individual_results(y_true: np.ndarray, eval_predictions: Dict[str, np.ndarray]) -> Dict[str, dict]:
+    return {
+        label: utils.evaluate_all_metrics(y_true, y_pred)
+        for label, y_pred in eval_predictions.items()
+    }
+
+
 def save_final_tables(cache_dir: str, individual_results: Dict, ensemble_results: Dict):
     final_results = {}
     final_results.update(individual_results)
@@ -378,7 +385,6 @@ def main():
             print(f'[SKIP] {label}: {exc}')
             continue
 
-        individual_results[label] = utils.normalize_metrics_dict(bundle['metrics'])
         eval_predictions[label] = bundle['eval']
         fit_predictions[label] = bundle['fit']
 
@@ -396,6 +402,8 @@ def main():
 
     datasets['y_test'] = y_test_aligned
     datasets['y_va'] = y_va_aligned
+
+    individual_results = compute_individual_results(datasets['y_test'], eval_predictions)
 
     print(f'\nModelos individuales disponibles: {list(individual_results.keys())}')
     print(pd.DataFrame(individual_results).T)
