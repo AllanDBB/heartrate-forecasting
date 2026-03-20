@@ -1,7 +1,7 @@
 import argparse
 import json
 import os
-from typing import Callable, Dict, List, Tuple
+from typing import Dict, List, Tuple
 
 import numpy as np
 import pandas as pd
@@ -84,15 +84,16 @@ def prepare_datasets(
 
     path_est_70 = os.path.join(cache_dir, 'values_deses_70.csv')
     path_est_30 = os.path.join(cache_dir, 'values_deses_30.csv')
-    df_scaled_70, _ = utils.estandarizar(df_70, path_est_70)
-    df_scaled_30, _ = utils.estandarizar(df_30, path_est_30)
+    df_scaled_70, params_fit = utils.estandarizar(df_70, path_est_70)
+    df_scaled_30, params_eval = utils.estandarizar(df_30, path_est_30)
 
-    X_train, y_train, _ = utils.series_to_supervised_matrix(
+    X_train, y_train, ids_train = utils.series_to_supervised_matrix(
         df_scaled_70.iloc[:, :-2], input_size=input_size, output_size=output_size
     )
-    X_tr, X_va, y_tr, y_va = train_test_split(
+    X_tr, X_va, y_tr, y_va, ids_tr, ids_va = train_test_split(
         X_train,
         y_train,
+        ids_train,
         test_size=validation_size,
         random_state=random_state,
     )
@@ -111,7 +112,11 @@ def prepare_datasets(
         'y_va': y_va,
         'X_test': X_test,
         'y_test': y_test,
+        'ids_tr': ids_tr,
+        'ids_va': ids_va,
         'ids_test': ids_list_te,
+        'params_fit': params_fit,
+        'params_eval': params_eval,
         'input_size': input_size,
         'output_size': output_size,
     }
@@ -254,7 +259,17 @@ def run_model(
 
     y_eval = model.predict(datasets['X_test'])
     y_fit = model.predict(datasets['X_va'])
-    metrics = utils.evaluate_all_metrics(datasets['y_test'], y_eval)
+    y_eval_original = utils.desestandarizar_ventanas(
+        y_eval,
+        datasets['ids_test'],
+        datasets['params_eval'],
+    )
+    y_test_original = utils.desestandarizar_ventanas(
+        datasets['y_test'],
+        datasets['ids_test'],
+        datasets['params_eval'],
+    )
+    metrics = utils.evaluate_all_metrics(y_test_original, y_eval_original)
 
     save_cached_predictions(paths, y_eval, y_fit, metrics)
     return {
@@ -289,6 +304,56 @@ def compute_individual_results(y_true: np.ndarray, eval_predictions: Dict[str, n
     return {
         label: utils.evaluate_all_metrics(y_true, y_pred)
         for label, y_pred in eval_predictions.items()
+    }
+
+
+def align_and_restore_original_scale(
+    datasets: Dict,
+    eval_predictions: Dict[str, np.ndarray],
+    fit_predictions: Dict[str, np.ndarray],
+):
+    y_test_scaled, eval_predictions_scaled, eval_n = align_predictions(
+        datasets['y_test'],
+        eval_predictions,
+    )
+    y_va_scaled, fit_predictions_scaled, fit_n = align_predictions(
+        datasets['y_va'],
+        fit_predictions,
+    )
+
+    ids_eval = trim_ids(datasets['ids_test'], eval_n)
+    ids_fit = trim_ids(datasets['ids_va'], fit_n)
+
+    y_true_eval = utils.desestandarizar_ventanas(
+        y_test_scaled,
+        ids_eval,
+        datasets['params_eval'],
+    )
+    y_true_fit = utils.desestandarizar_ventanas(
+        y_va_scaled,
+        ids_fit,
+        datasets['params_fit'],
+    )
+    eval_predictions_original = utils.desestandarizar_predicciones(
+        eval_predictions_scaled,
+        ids_eval,
+        datasets['params_eval'],
+    )
+    fit_predictions_original = utils.desestandarizar_predicciones(
+        fit_predictions_scaled,
+        ids_fit,
+        datasets['params_fit'],
+    )
+
+    return {
+        'y_true_eval': y_true_eval,
+        'y_true_fit': y_true_fit,
+        'eval_predictions': eval_predictions_original,
+        'fit_predictions': fit_predictions_original,
+        'ids_eval': ids_eval,
+        'ids_fit': ids_fit,
+        'eval_n': eval_n,
+        'fit_n': fit_n,
     }
 
 
@@ -393,15 +458,25 @@ def main():
             'No se pudo ejecutar ningun modelo. Revisa dependencias o usa el cache existente.'
         )
 
-    y_test_aligned, eval_predictions, eval_n = align_predictions(datasets['y_test'], eval_predictions)
-    y_va_aligned, fit_predictions, _ = align_predictions(datasets['y_va'], fit_predictions)
-    ids_test = trim_ids(datasets['ids_test'], eval_n)
+    original_scale = align_and_restore_original_scale(
+        datasets,
+        eval_predictions,
+        fit_predictions,
+    )
+    ids_test = original_scale['ids_eval']
+    eval_n = original_scale['eval_n']
 
     if eval_n != datasets['y_test'].shape[0]:
         print(f'\nAviso: recortando eval a {eval_n} ventanas para alinear predicciones.')
 
-    datasets['y_test'] = y_test_aligned
-    datasets['y_va'] = y_va_aligned
+    datasets['y_test_scaled'] = datasets['y_test']
+    datasets['y_va_scaled'] = datasets['y_va']
+    datasets['y_test'] = original_scale['y_true_eval']
+    datasets['y_va'] = original_scale['y_true_fit']
+    eval_predictions = original_scale['eval_predictions']
+    fit_predictions = original_scale['fit_predictions']
+    datasets['ids_test'] = ids_test
+    datasets['ids_va'] = original_scale['ids_fit']
 
     individual_results = compute_individual_results(datasets['y_test'], eval_predictions)
 
