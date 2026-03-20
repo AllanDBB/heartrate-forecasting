@@ -109,14 +109,24 @@ class EnsembleWrapper:
 
         return common_names
 
+    def _metric_is_higher_better(self, metric: str) -> bool:
+        return utils.normalize_metric_name(metric) == 'Pearson'
+
     def _objective_value(self, y_true: np.ndarray, y_pred: np.ndarray, metric: str) -> float:
-        metric = metric.upper()
-        if metric == 'MSE':
-            return float(np.mean((y_pred - y_true) ** 2))
+        metric = utils.normalize_metric_name(metric)
         if metric == 'MAPE':
-            y_safe = np.maximum(np.abs(y_true), 1e-8)
-            return float(np.mean(np.abs((y_true - y_pred) / y_safe)) * 100)
+            return float(np.mean(utils.compute_mape_for_all_windows(y_true, y_pred)))
+        if metric == 'DTW':
+            return float(np.mean(utils.compute_dtw_for_all_windows(y_true, y_pred)))
+        if metric == 'Pearson':
+            return float(np.mean(utils.compute_correlations_for_all_windows(y_true, y_pred)))
         raise ValueError(f"Metrica objetivo desconocida: {metric}")
+
+    def _objective_loss(self, y_true: np.ndarray, y_pred: np.ndarray, metric: str) -> float:
+        value = self._objective_value(y_true, y_pred, metric)
+        if self._metric_is_higher_better(metric):
+            return -value
+        return value
 
     def _snapshot_state(self) -> dict:
         return {
@@ -136,27 +146,31 @@ class EnsembleWrapper:
         if not results:
             raise ValueError("No hay resultados para seleccionar el mejor metodo.")
 
-        metric = metric
-        sample_metrics = next(iter(results.values()))
+        metric = utils.normalize_metric_name(metric)
+        normalized_results = {
+            name: utils.normalize_metrics_dict(metrics)
+            for name, metrics in results.items()
+        }
+        sample_metrics = next(iter(normalized_results.values()))
         if metric not in sample_metrics:
             raise ValueError(f"La metrica {metric} no esta disponible en los resultados.")
 
-        if metric == 'Correlation':
+        if metric == 'Pearson':
             return max(
-                results,
+                normalized_results,
                 key=lambda name: (
-                    results[name][metric],
-                    -results[name].get('MAPE', float('inf')),
-                    -results[name].get('DTW', float('inf')),
+                    normalized_results[name][metric],
+                    -normalized_results[name].get('MAPE', float('inf')),
+                    -normalized_results[name].get('DTW', float('inf')),
                 ),
             )
 
         return min(
-            results,
+            normalized_results,
             key=lambda name: (
-                results[name][metric],
-                -results[name].get('Correlation', float('-inf')),
-                results[name].get('DTW', float('inf')),
+                normalized_results[name][metric],
+                -normalized_results[name].get('Pearson', float('-inf')),
+                normalized_results[name].get('DTW', float('inf')),
             ),
         )
 
@@ -267,7 +281,7 @@ class EnsembleWrapper:
         Args:
             y_true: validation target of shape (N, horizon)
             method: 'average' | 'optimize' | 'stacking'
-            objective_metric: objective used for optimized weights ('MAPE' or 'MSE')
+            objective_metric: objective used for optimized weights ('MAPE', 'DTW' or 'Pearson')
         """
         self.method = method
         self.meta_model = None
@@ -305,7 +319,7 @@ class EnsembleWrapper:
         from scipy.optimize import minimize
 
         preds_stack = self._stack_predictions(self.fit_models, names)
-        objective_metric = objective_metric.upper()
+        objective_metric = utils.normalize_metric_name(objective_metric)
 
         def normalize_weights(w):
             w = np.abs(w)
@@ -317,7 +331,7 @@ class EnsembleWrapper:
         def objective(w):
             w = normalize_weights(w)
             weighted = np.einsum('m,mnh->nh', w, preds_stack)
-            return self._objective_value(y_true, weighted, objective_metric)
+            return self._objective_loss(y_true, weighted, objective_metric)
 
         w0 = np.ones(len(names)) / len(names)
         result = minimize(
@@ -337,14 +351,17 @@ class EnsembleWrapper:
         baseline_value = self._objective_value(y_true, avg_pred, objective_metric)
         opt_pred = np.einsum('m,mnh->nh', self.weights, preds_stack)
         opt_value = self._objective_value(y_true, opt_pred, objective_metric)
-        improvement = 0.0 if baseline_value == 0 else 100 * (baseline_value - opt_value) / baseline_value
+        if self._metric_is_higher_better(objective_metric):
+            scale = abs(baseline_value)
+            improvement = 0.0 if scale <= 1e-12 else 100 * (opt_value - baseline_value) / scale
+        else:
+            improvement = 0.0 if baseline_value == 0 else 100 * (baseline_value - opt_value) / baseline_value
         print(f"  {objective_metric} promedio simple: {baseline_value:.6f}")
         print(f"  {objective_metric} pesos optimos: {opt_value:.6f} ({improvement:.1f}% mejora)")
 
     def _fit_stacking(self, y_true: np.ndarray, names: List[str]):
         """Train a Ridge regression meta-learner on validation predictions."""
         from sklearn.linear_model import Ridge
-        from sklearn.model_selection import cross_val_score
 
         _, horizon = y_true.shape
         features = np.hstack([self.fit_models[name] for name in names])
@@ -352,15 +369,7 @@ class EnsembleWrapper:
         self.meta_model = Ridge(alpha=1.0)
         self.meta_model.fit(features, y_true)
 
-        scores = cross_val_score(
-            Ridge(alpha=1.0),
-            features,
-            y_true,
-            cv=3,
-            scoring='neg_mean_squared_error',
-        )
         print("  Metodo: stacking (Ridge regression)")
-        print(f"  CV MSE: {-np.mean(scores):.6f} +- {np.std(scores):.6f}")
         print(f"  Features por muestra: {features.shape[1]} ({len(names)} modelos x {horizon} horizonte)")
 
     # ------------------------------------------------------------------
@@ -423,7 +432,7 @@ class EnsembleWrapper:
             y_true_eval: target for final evaluation (typically test)
             y_true_fit: target for weight/meta-model fitting (typically validation)
             select_by: metric used to keep the best method active after comparison
-            objective_metric: objective used by weighted averaging ('MAPE' or 'MSE')
+            objective_metric: objective used by weighted averaging ('MAPE', 'DTW' or 'Pearson')
 
         Returns:
             dict of method -> metrics
@@ -431,6 +440,8 @@ class EnsembleWrapper:
         if not self.models:
             raise ValueError("No se han agregado predicciones split='eval' al ensemble.")
 
+        select_by = utils.normalize_metric_name(select_by)
+        objective_metric = utils.normalize_metric_name(objective_metric)
         results = {}
         snapshots = {}
 

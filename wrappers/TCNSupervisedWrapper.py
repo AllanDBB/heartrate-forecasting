@@ -76,7 +76,7 @@ class TCNSupervisedWrapper:
         ])
 
         opt = tf.keras.optimizers.Adam(learning_rate=self.lr)
-        model.compile(optimizer=opt, loss='mae')
+        model.compile(optimizer=opt, loss='mape')
         return model
 
     def load(self, path: str):
@@ -136,7 +136,7 @@ class TCNSupervisedWrapper:
             ax.plot(history.history['val_loss'], label='Val Loss', linewidth=2)
         ax.set_title('TCN: Training vs Validation Loss', fontsize=13, fontweight='bold')
         ax.set_xlabel('Epoch')
-        ax.set_ylabel('Loss (MAE)')
+        ax.set_ylabel('Loss')
         ax.legend()
         ax.grid(True, alpha=0.3)
         plt.tight_layout()
@@ -167,7 +167,7 @@ class TCNSupervisedWrapper:
 
     def evaluate(self, X: np.ndarray, y_true: np.ndarray) -> dict:
         """
-        Evaluate with the paper metrics: MAPE, DTW, Correlation.
+        Evaluate with the repo metrics: MAPE, DTW, Pearson.
         """
         y_pred = self.predict(X)
         return utils.evaluate_all_metrics(y_true, y_pred)

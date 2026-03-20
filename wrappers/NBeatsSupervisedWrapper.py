@@ -26,9 +26,12 @@ def _get_nbeats_block_class():
             self.units = units
             self.expansion = expansion
             self.hidden_layers = [
-                Dense(units, activation='relu') for _ in range(4)
+                Dense(units, activation='relu', name='fc1'),
+                Dense(units, activation='relu', name='fc2'),
+                Dense(units, activation='relu', name='fc3'),
+                Dense(units, activation='relu', name='fc4'),
             ]
-            self.theta = Dense(expansion)
+            self.theta = Dense(expansion, name='theta_layer')
 
         def build(self, input_shape):
             current_shape = tf.TensorShape(input_shape)
@@ -120,7 +123,7 @@ class NBeatsSupervisedWrapper:
 
         model = Model(inputs=inputs, outputs=outputs)
         opt = tf.keras.optimizers.Adam(learning_rate=self.lr)
-        model.compile(optimizer=opt, loss='mae')
+        model.compile(optimizer=opt, loss='mape')
         return model
 
     def load(self, path: str):
@@ -177,7 +180,7 @@ class NBeatsSupervisedWrapper:
             ax.plot(history.history['val_loss'], label='Val Loss', linewidth=2)
         ax.set_title('NBEATS: Training vs Validation Loss', fontsize=13, fontweight='bold')
         ax.set_xlabel('Epoch')
-        ax.set_ylabel('Loss (MAE)')
+        ax.set_ylabel('Loss')
         ax.legend()
         ax.grid(True, alpha=0.3)
         plt.tight_layout()
@@ -198,7 +201,7 @@ class NBeatsSupervisedWrapper:
         return y_pred
 
     def evaluate(self, X: np.ndarray, y_true: np.ndarray) -> dict:
-        """Evaluate with the paper metrics: MAPE, DTW, Correlation."""
+        """Evaluate with the repo metrics: MAPE, DTW, Pearson."""
         y_pred = self.predict(X)
         return utils.evaluate_all_metrics(y_true, y_pred)
 

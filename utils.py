@@ -11,8 +11,65 @@ from sklearn.preprocessing import MinMaxScaler
 
 
 # ============================================================================
-# EVALUATION METRICS: DTW, Pearson Correlation, MAPE
+# EVALUATION METRICS: DTW, Pearson, MAPE
 # ============================================================================
+
+SUPPORTED_EVAL_METRICS = ("MAPE", "DTW", "Pearson")
+DEFAULT_DTW_WINDOW = 20
+
+
+def normalize_metric_name(metric_name: str) -> str:
+    """
+    Normalize metric aliases so the repo exposes only MAPE, DTW and Pearson.
+    """
+    if not isinstance(metric_name, str):
+        raise TypeError(f"El nombre de la metrica debe ser str. Recibido: {type(metric_name)!r}")
+
+    normalized = metric_name.strip().upper()
+    aliases = {
+        "MAPE": "MAPE",
+        "DWT": "DTW",
+        "DTW": "DTW",
+        "PEARSON": "Pearson",
+        "PEARSON CORRELATION": "Pearson",
+        "CORRELATION": "Pearson",
+        "CORRELACION": "Pearson",
+        "CORRELACIÓN": "Pearson",
+        "CORRELACION DE PEARSON": "Pearson",
+        "CORRELACIÓN DE PEARSON": "Pearson",
+    }
+    if normalized not in aliases:
+        raise ValueError(
+            f"Metrica no soportada: {metric_name}. "
+            f"Usa solo {', '.join(SUPPORTED_EVAL_METRICS)}."
+        )
+    return aliases[normalized]
+
+
+def normalize_metrics_dict(metrics_dict):
+    """
+    Normalize metric keys to the canonical names used across the repo.
+    """
+    normalized = {}
+    for metric_name, metric_value in metrics_dict.items():
+        normalized[normalize_metric_name(metric_name)] = metric_value
+    return normalized
+
+
+def _validate_metric_inputs(y_true, y_pred):
+    y_true = np.asarray(y_true, dtype=float)
+    y_pred = np.asarray(y_pred, dtype=float)
+
+    if y_true.shape != y_pred.shape:
+        raise ValueError(
+            f"Shape mismatch en evaluate_all_metrics: y_true={y_true.shape}, y_pred={y_pred.shape}"
+        )
+    if y_true.ndim != 2:
+        raise ValueError(
+            f"evaluate_all_metrics espera arrays 2D (N, horizon). Recibido ndim={y_true.ndim}"
+        )
+
+    return y_true, y_pred
 
 def _dtw_distance(s1, s2, window=None):
     """
@@ -44,11 +101,32 @@ def _dtw_distance(s1, s2, window=None):
     return np.sqrt(D[n, m])
 
 
-def compute_dtw(y_true_row, y_pred_row, window=20):
+def compute_dtw(y_true_row, y_pred_row, window=DEFAULT_DTW_WINDOW):
     """
     DTW distance between a single (true, pred) pair.
     """
     return _dtw_distance(y_true_row, y_pred_row, window=window)
+
+
+def compute_dtw_for_all_windows(y_true, y_pred, window=DEFAULT_DTW_WINDOW):
+    """
+    DTW computed independently for every available evaluation window.
+    """
+    y_true, y_pred = _validate_metric_inputs(y_true, y_pred)
+    n_windows = y_true.shape[0]
+    return np.array(
+        [compute_dtw(y_true[i], y_pred[i], window=window) for i in range(n_windows)],
+        dtype=float,
+    )
+
+
+def compute_mape_for_all_windows(y_true, y_pred, eps=1e-8):
+    """
+    MAPE computed independently for every available evaluation window.
+    """
+    y_true, y_pred = _validate_metric_inputs(y_true, y_pred)
+    y_safe = np.maximum(np.abs(y_true), eps)
+    return np.mean(np.abs((y_true - y_pred) / y_safe), axis=1) * 100
 
 
 def compute_correlation(y_true_row, y_pred_row, eps=1e-8):
@@ -77,8 +155,7 @@ def compute_correlations_for_all_windows(y_true, y_pred, eps=1e-8):
     """
     Pearson correlation computed independently for every forecast window.
     """
-    y_true = np.asarray(y_true, dtype=float)
-    y_pred = np.asarray(y_pred, dtype=float)
+    y_true, y_pred = _validate_metric_inputs(y_true, y_pred)
 
     true_centered = y_true - np.mean(y_true, axis=1, keepdims=True)
     pred_centered = y_pred - np.mean(y_pred, axis=1, keepdims=True)
@@ -98,47 +175,37 @@ def compute_correlations_for_all_windows(y_true, y_pred, eps=1e-8):
     return np.clip(corr, -1.0, 1.0)
 
 
-def evaluate_all_metrics(y_true, y_pred, dtw_window=20):
+def evaluate_all_metrics(y_true, y_pred, dtw_window=DEFAULT_DTW_WINDOW):
     """
-    Compute the paper metrics on (y_true, y_pred) arrays of shape (N, horizon).
+    Compute the repo-wide metrics on (y_true, y_pred) arrays of shape (N, horizon).
+    Every row is one evaluation window, so aggregation spans all available
+    windows generated upstream.
 
     Metrics:
-      - MAPE: mean absolute percentage error across all forecast points
-      - DTW: mean DTW distance across all forecast windows
-      - Correlation: mean Pearson correlation across all forecast windows
+      - MAPE: mean window-level MAPE across all evaluation windows
+      - DTW: mean DTW distance across all evaluation windows
+      - Pearson: mean Pearson correlation across all evaluation windows
 
 
     Returns:
         dict with metric names -> rounded values
     """
-    y_true = np.asarray(y_true, dtype=float)
-    y_pred = np.asarray(y_pred, dtype=float)
+    y_true, y_pred = _validate_metric_inputs(y_true, y_pred)
 
-    if y_true.shape != y_pred.shape:
-        raise ValueError(
-            f"Shape mismatch en evaluate_all_metrics: y_true={y_true.shape}, y_pred={y_pred.shape}"
-        )
-    if y_true.ndim != 2:
-        raise ValueError(
-            f"evaluate_all_metrics espera arrays 2D (N, horizon). Recibido ndim={y_true.ndim}"
-        )
-
-    y_safe = np.maximum(np.abs(y_true), 1e-8)
-    mape = np.mean(np.abs((y_true - y_pred) / y_safe)) * 100
-
-    n_windows = y_true.shape[0]
-    dtw_vals = [compute_dtw(y_true[i], y_pred[i], window=dtw_window) for i in range(n_windows)]
+    mape_vals = compute_mape_for_all_windows(y_true, y_pred)
+    dtw_vals = compute_dtw_for_all_windows(y_true, y_pred, window=dtw_window)
     corr_vals = compute_correlations_for_all_windows(y_true, y_pred)
 
     metrics = {
-        "MAPE": round(float(mape), 4),
+        "MAPE": round(float(np.mean(mape_vals)), 4),
         "DTW": round(float(np.mean(dtw_vals)), 4),
-        "Correlation": round(float(np.mean(corr_vals)), 4),
+        "Pearson": round(float(np.mean(corr_vals)), 4),
     }
 
     print("=" * 50)
     print("  Evaluation Metrics")
     print("=" * 50)
+    print(f"  Ventanas evaluadas   : {y_true.shape[0]}")
     for name, val in metrics.items():
         print(f"  {name:20s}: {val}")
     print("=" * 50)
@@ -173,7 +240,7 @@ def plot_forecast_samples(y_true, y_pred, n_samples=6, title="Predicción vs Rea
         y_safe_i = np.maximum(np.abs(y_true[idx]), 1e-8)
         mape_i = np.mean(np.abs((y_true[idx] - y_pred[idx]) / y_safe_i)) * 100
         corr_i = compute_correlation(y_true[idx], y_pred[idx])
-        ax.set_title(f'Ventana #{idx}  |  MAPE={mape_i:.2f}%  |  Corr={corr_i:.2f}', fontsize=10)
+        ax.set_title(f'Ventana #{idx}  |  MAPE={mape_i:.2f}%  |  Pearson={corr_i:.2f}', fontsize=10)
         ax.set_xlabel('Paso de tiempo')
         ax.set_ylabel('Valor')
         ax.legend(fontsize=9)
@@ -193,19 +260,19 @@ def plot_error_over_horizon(y_true, y_pred, title="Error según horizonte de pre
     Shows how prediction error increases over the forecast horizon.
     Very intuitive for non-technical people: 'further in the future = harder to predict'.
     """
+    y_true, y_pred = _validate_metric_inputs(y_true, y_pred)
     horizon = y_true.shape[1]
-    mae_per_step = np.mean(np.abs(y_true - y_pred), axis=0)
-    rmse_per_step = np.sqrt(np.mean((y_true - y_pred) ** 2, axis=0))
+    y_safe = np.maximum(np.abs(y_true), 1e-8)
+    mape_per_step = np.mean(np.abs((y_true - y_pred) / y_safe), axis=0) * 100
 
-    fig, ax1 = plt.subplots(figsize=(12, 5))
-    ax1.plot(range(horizon), mae_per_step, color='steelblue', linewidth=2, label='MAE')
-    ax1.fill_between(range(horizon), mae_per_step, alpha=0.2, color='steelblue')
-    ax1.plot(range(horizon), rmse_per_step, color='darkorange', linewidth=2, label='RMSE', linestyle='--')
-    ax1.set_xlabel('Paso en el futuro', fontsize=12)
-    ax1.set_ylabel('Error', fontsize=12)
-    ax1.set_title(title, fontsize=14, fontweight='bold')
-    ax1.legend(fontsize=11)
-    ax1.grid(True, alpha=0.3)
+    fig, ax = plt.subplots(figsize=(12, 5))
+    ax.plot(range(horizon), mape_per_step, color='steelblue', linewidth=2, label='MAPE')
+    ax.fill_between(range(horizon), mape_per_step, alpha=0.2, color='steelblue')
+    ax.set_xlabel('Paso en el futuro', fontsize=12)
+    ax.set_ylabel('MAPE (%)', fontsize=12)
+    ax.set_title(title, fontsize=14, fontweight='bold')
+    ax.legend(fontsize=11)
+    ax.grid(True, alpha=0.3)
     plt.tight_layout()
     plt.show()
     return fig
@@ -223,11 +290,15 @@ def plot_metrics_comparison(results_dict, title="Comparación de Modelos"):
         print("No hay resultados para comparar.")
         return
 
+    results_dict = {
+        model_name: normalize_metrics_dict(metrics_dict)
+        for model_name, metrics_dict in results_dict.items()
+    }
     model_names = list(results_dict.keys())
     metric_names = list(list(results_dict.values())[0].keys())
 
     # Separate correlation (higher is better) from the rest (lower is better)
-    higher_better_names = {"Correlation", "CrossCorrelation"}
+    higher_better_names = {"Pearson"}
     lower_better = [m for m in metric_names if m not in higher_better_names]
     higher_better = [m for m in metric_names if m in higher_better_names]
 
@@ -250,13 +321,13 @@ def plot_metrics_comparison(results_dict, title="Comparación de Modelos"):
 
     # Plot 2: metrics where higher is better
     if higher_better:
-        for i, metric in enumerate(higher_better):
+        for metric in higher_better:
             vals = [results_dict[m].get(metric, 0) for m in model_names]
             colors = ['#2ecc71' if v == max(vals) else '#95a5a6' for v in vals]
             axes[1].bar(model_names, vals, color=colors, alpha=0.85)
             for j, v in enumerate(vals):
                 axes[1].text(j, v + 0.01, f'{v:.3f}', ha='center', fontsize=10)
-        axes[1].set_title('Correlación (↑ mayor = mejor)', fontsize=12, fontweight='bold')
+        axes[1].set_title('Pearson (↑ mayor = mejor)', fontsize=12, fontweight='bold')
         axes[1].set_ylim(-1.0, 1.1)
         axes[1].grid(True, alpha=0.3, axis='y')
 
@@ -268,7 +339,7 @@ def plot_metrics_comparison(results_dict, title="Comparación de Modelos"):
 
 def plot_subject_performance(y_true, y_pred, ids_list, title="Rendimiento por Sujeto"):
     """
-    Per-subject performance barplot showing MAPE and Correlation.
+    Per-subject performance barplot showing MAPE and Pearson.
     Shows which subjects are easier/harder to predict.
     """
     ids_arr = np.array(ids_list)
@@ -302,8 +373,8 @@ def plot_subject_performance(y_true, y_pred, ids_list, title="Rendimiento por Su
     colors_corr = ['#2ecc71' if x > np.mean(corrs) else '#e74c3c' for x in corrs]
     ax2.bar(labels, corrs, color=colors_corr, alpha=0.8)
     ax2.axhline(np.mean(corrs), color='navy', linestyle='--', label=f'Promedio={np.mean(corrs):.2f}')
-    ax2.set_title('Correlación por Sujeto (↑ mayor = mejor)', fontsize=12, fontweight='bold')
-    ax2.set_ylabel('Correlation')
+    ax2.set_title('Pearson por Sujeto (↑ mayor = mejor)', fontsize=12, fontweight='bold')
+    ax2.set_ylabel('Pearson')
     ax2.set_ylim(-1.0, 1.1)
     ax2.legend()
     ax2.tick_params(axis='x', rotation=45)
@@ -605,7 +676,7 @@ def preProcDataset(df_data):
     df['TIME_dt'] = pd.to_datetime(df['TIME '], format='%H:%M:%S %f')
 
     # 3. Crear una columna que contenga solo los segundos (sin milisegundos)
-    df['segundo_agrupado'] = df['TIME_dt'].dt.floor('S')
+    df['segundo_agrupado'] = df['TIME_dt'].dt.floor('s')
 
     # 4. Generar el consecutivo para cada grupo de segundos
     df['consecutivo']=df.groupby('segundo_agrupado').ngroup()

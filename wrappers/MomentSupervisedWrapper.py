@@ -33,7 +33,11 @@ class MomentSupervisedWrapper:
         self.output_size = config['forecasting']['output_size']
         self.batch_size = config['forecasting']['batch_size']
         self.context_length = config['forecasting'].get('context_length', 512)
-        self.device = config['model']['device']
+        requested_device = config['model'].get('device', 'cpu')
+        self.device = requested_device
+        if requested_device == 'cuda' and not torch.cuda.is_available():
+            print("  Aviso: CUDA no disponible; MOMENT usara CPU.")
+            self.device = 'cpu'
         self.epochs = config['training']['epochs']
         self.lr = config['training']['lr']
         self.encoder_lr = config['training'].get('encoder_lr', 1e-5)
@@ -137,7 +141,8 @@ class MomentSupervisedWrapper:
         scheduler = CosineAnnealingWarmRestarts(optimizer, T_0=max(1, total_steps - warmup_steps))
 
         criterion = nn.MSELoss().to(self.device)
-        scaler = torch.cuda.amp.GradScaler()
+        use_amp = self.device == 'cuda' and torch.cuda.is_available()
+        scaler = torch.cuda.amp.GradScaler(enabled=use_amp)
 
         trainable = sum(p.numel() for p in self.model.parameters() if p.requires_grad)
         total = sum(p.numel() for p in self.model.parameters())
@@ -154,7 +159,7 @@ class MomentSupervisedWrapper:
                 y_b = y_b.to(self.device)
 
                 optimizer.zero_grad()
-                with torch.cuda.amp.autocast():
+                with torch.cuda.amp.autocast(enabled=use_amp):
                     output = self.model(x_enc=x_b, input_mask=m_b)
                     loss = criterion(output.forecast, y_b)
 

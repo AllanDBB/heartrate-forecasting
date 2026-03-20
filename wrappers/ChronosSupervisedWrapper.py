@@ -151,6 +151,6 @@ class ChronosSupervisedWrapper:
         return base
     
     def evaluate(self, X: np.ndarray, y_true: np.ndarray) -> dict:
-        """Evaluate with the paper metrics: MAPE, DTW, Correlation."""
+        """Evaluate with the repo metrics: MAPE, DTW, Pearson."""
         y_pred = self.predict(X)
         return utils.evaluate_all_metrics(y_true, y_pred)

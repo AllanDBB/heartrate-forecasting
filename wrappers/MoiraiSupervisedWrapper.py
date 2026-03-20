@@ -9,7 +9,6 @@ import pandas as pd
 from torch.utils.data import DataLoader, TensorDataset
 from torch.optim import Adam
 from tqdm import tqdm
-from gluonts.dataset.common import ListDataset
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..'))
 import utils
@@ -85,7 +84,11 @@ class MoiraiSupervisedWrapper:
         self.batch_size = config['forecasting']['batch_size']
         self.freq = config['model']['freq']
         self.num_samples = config['model']['num_samples']
-        self.device = config['model'].get('device', 'cuda')
+        requested_device = config['model'].get('device', 'cpu')
+        self.device = requested_device
+        if requested_device == 'cuda' and not torch.cuda.is_available():
+            print("  Aviso: CUDA no disponible; Moirai usara CPU.")
+            self.device = 'cpu'
 
         # Resolve patch_size: must be an int from {8,16,32,64,128}
         raw_ps = config['model']['patch_size']
@@ -206,6 +209,8 @@ class MoiraiSupervisedWrapper:
 
     def _predict_raw(self, X: np.ndarray) -> np.ndarray:
         """Zero-shot prediction without adapter."""
+        from gluonts.dataset.common import ListDataset
+
         n_samples = X.shape[0]
         y_pred = np.zeros((n_samples, self.output_size))
 
@@ -237,6 +242,6 @@ class MoiraiSupervisedWrapper:
         return base
 
     def evaluate(self, X: np.ndarray, y_true: np.ndarray) -> dict:
-        """Evaluate with the paper metrics: MAPE, DTW, Correlation."""
+        """Evaluate with the repo metrics: MAPE, DTW, Pearson."""
         y_pred = self.predict(X)
         return utils.evaluate_all_metrics(y_true, y_pred)
