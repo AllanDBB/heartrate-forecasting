@@ -741,6 +741,36 @@ def load_predefined_split(split_70_path, split_30_path):
     return read_split_dataframe(split_70_path), read_split_dataframe(split_30_path)
 
 
+def sanitize_split_dataframes(df_70, df_30):
+    """
+    Ensure train/eval split frames are disjoint and have unique column names.
+
+    Legacy saved splits may contain overlapping columns because an older
+    pipeline appended the same tail columns to both partitions. Those
+    overlapping columns are removed from both splits so the effective
+    train/eval partitions are disjoint.
+    """
+    df_70 = df_70.copy()
+    df_30 = df_30.copy()
+
+    dup_70 = df_70.columns[df_70.columns.duplicated()].tolist()
+    dup_30 = df_30.columns[df_30.columns.duplicated()].tolist()
+    if dup_70 or dup_30:
+        raise ValueError(
+            f"Columnas duplicadas dentro del split. split_70={dup_70[:10]}, split_30={dup_30[:10]}"
+        )
+
+    overlap = [col for col in df_70.columns if col in set(df_30.columns)]
+    if overlap:
+        df_70 = df_70[[col for col in df_70.columns if col not in overlap]].copy()
+        df_30 = df_30[[col for col in df_30.columns if col not in overlap]].copy()
+
+    if df_70.shape[1] == 0 or df_30.shape[1] == 0:
+        raise ValueError("Uno de los splits quedo vacio tras sanear columnas solapadas.")
+
+    return df_70, df_30, overlap
+
+
 def compare_split_dataframes(expected_70, expected_30, observed_70, observed_30, atol=1e-10):
     """
     Compare two 70/30 split pairs. Values are compared after aligning columns,
@@ -794,7 +824,7 @@ def compare_split_dataframes(expected_70, expected_30, observed_70, observed_30,
     return comparison
 
 
-def selectRandomColumns(df, seed=42):
+def _legacy_selectRandomColumns(df, seed=42):
   '''
   Function to select validation from rows sampled randomly
   '''
@@ -817,6 +847,25 @@ def selectRandomColumns(df, seed=42):
   # Construcción de los dos nuevos DataFrames conservando las últimas dos al final
   df_70 = df[list(cols_70) + last_two]
   df_30 = df[list(cols_30) + last_two]
+
+  return df_70, df_30
+
+
+def selectRandomColumns(df, seed=42):
+  '''
+  Function to split columns randomly into 70% / 30%.
+  '''
+  all_cols = df.columns.tolist()
+
+  rng = np.random.RandomState(seed)
+  n_70 = int(len(all_cols) * 0.7)
+  cols_70 = rng.choice(all_cols, size=n_70, replace=False).tolist()
+
+  cols_70_set = set(cols_70)
+  cols_30 = [col for col in all_cols if col not in cols_70_set]
+
+  df_70 = df[list(cols_70)]
+  df_30 = df[list(cols_30)]
 
   return df_70, df_30
 

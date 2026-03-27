@@ -174,6 +174,26 @@ class EnsembleWrapper:
             ),
         )
 
+    def _resolve_active_method_name(self, active_method: str) -> str:
+        aliases = {
+            'average': 'Ensemble (Promedio)',
+            'avg': 'Ensemble (Promedio)',
+            'promedio': 'Ensemble (Promedio)',
+            'optimize': 'Ensemble (Pesos Optimos)',
+            'optimized': 'Ensemble (Pesos Optimos)',
+            'weights': 'Ensemble (Pesos Optimos)',
+            'pesos': 'Ensemble (Pesos Optimos)',
+            'stacking': 'Ensemble (Stacking)',
+            'ridge': 'Ensemble (Stacking)',
+        }
+        normalized = str(active_method).strip().lower()
+        if normalized not in aliases:
+            raise ValueError(
+                f"Metodo activo desconocido: {active_method}. "
+                "Usa 'average', 'optimize' o 'stacking'."
+            )
+        return aliases[normalized]
+
     # ------------------------------------------------------------------
     # Add base model predictions
     # ------------------------------------------------------------------
@@ -424,15 +444,18 @@ class EnsembleWrapper:
         y_true_fit: np.ndarray = None,
         select_by: str = 'MAPE',
         objective_metric: str = 'MAPE',
+        active_method: str = 'optimize',
     ) -> dict:
         """
-        Compare ensemble methods without leaking test data into fitted methods.
+        Compare ensemble methods without selecting the final method on eval.
 
         Args:
             y_true_eval: target for final evaluation (typically test)
             y_true_fit: target for weight/meta-model fitting (typically validation)
-            select_by: metric used to keep the best method active after comparison
+            select_by: kept only for backward compatibility
             objective_metric: objective used by weighted averaging ('MAPE', 'DTW' or 'Pearson')
+            active_method: method fixed in advance as the active ensemble
+                           ('average', 'optimize' or 'stacking')
 
         Returns:
             dict of method -> metrics
@@ -440,10 +463,10 @@ class EnsembleWrapper:
         if not self.models:
             raise ValueError("No se han agregado predicciones split='eval' al ensemble.")
 
-        select_by = utils.normalize_metric_name(select_by)
         objective_metric = utils.normalize_metric_name(objective_metric)
         results = {}
         snapshots = {}
+        active_method_name = self._resolve_active_method_name(active_method)
 
         comparison_names = list(self.models.keys())
         if y_true_fit is not None:
@@ -465,9 +488,8 @@ class EnsembleWrapper:
                 "\nAviso: no se proporciono y_true_fit. "
                 "Se omiten pesos optimizados y stacking para evitar usar test en el ajuste."
             )
-            best_method = self._select_best_method(results, select_by)
-            self._restore_state(snapshots[best_method])
-            print(f"Metodo activo tras compare_methods: {best_method}")
+            self._restore_state(snapshots["Ensemble (Promedio)"])
+            print("Metodo activo tras compare_methods: Ensemble (Promedio)")
             return results
 
         print("\n=== Pesos Optimizados ===")
@@ -482,7 +504,9 @@ class EnsembleWrapper:
         results["Ensemble (Stacking)"] = utils.evaluate_all_metrics(y_true_eval, y_stack)
         snapshots["Ensemble (Stacking)"] = self._snapshot_state()
 
-        best_method = self._select_best_method(results, select_by)
-        self._restore_state(snapshots[best_method])
-        print(f"\nMetodo activo tras compare_methods: {best_method} (segun {select_by})")
+        self._restore_state(snapshots[active_method_name])
+        print(
+            f"\nMetodo activo tras compare_methods: {active_method_name} "
+            f"(fijado de antemano; select_by={select_by} ya no usa eval)"
+        )
         return results

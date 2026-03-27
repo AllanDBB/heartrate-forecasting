@@ -1,4 +1,5 @@
 import argparse
+import hashlib
 import json
 import os
 from typing import Dict, List, Tuple
@@ -29,6 +30,7 @@ DEFAULT_MODELS = list(LOCAL_PRETRAINED_MODELS)
 ALL_MODELS = list(FOUNDATION_MODELS) + list(LOCAL_PRETRAINED_MODELS)
 DEFAULT_SPLIT_70_CSV = os.path.join(PROJECT_DIR, 'configs', 'df_70.csv')
 DEFAULT_SPLIT_30_CSV = os.path.join(PROJECT_DIR, 'configs', 'df_30.csv')
+DEFAULT_ENSEMBLE_ACTIVE_METHOD = 'optimize'
 
 
 def parse_args():
@@ -66,12 +68,18 @@ def parse_args():
     parser.add_argument(
         '--select-by',
         default='MAPE',
-        help='Metrica usada para dejar activo el mejor ensemble.',
+        help='Compatibilidad legacy. Ya no selecciona el ensemble final usando eval.',
     )
     parser.add_argument(
         '--objective-metric',
         default='MAPE',
         help='Metrica objetivo para optimizacion de pesos.',
+    )
+    parser.add_argument(
+        '--ensemble-active-method',
+        default=DEFAULT_ENSEMBLE_ACTIVE_METHOD,
+        choices=['average', 'optimize', 'stacking'],
+        help='Metodo del ensemble que queda activo al final; se fija de antemano y no se elige sobre eval.',
     )
     parser.add_argument(
         '--force-recompute',
@@ -92,6 +100,72 @@ def ensure_dir(path: str):
 
 def project_path(*parts: str) -> str:
     return os.path.join(PROJECT_DIR, *parts)
+
+
+def normalize_project_path(path: str | None) -> str | None:
+    if path is None:
+        return None
+
+    abs_path = os.path.abspath(path)
+    try:
+        rel_path = os.path.relpath(abs_path, PROJECT_DIR)
+    except ValueError:
+        return abs_path
+
+    if rel_path.startswith('..'):
+        return abs_path
+    return rel_path.replace('\\', '/')
+
+
+def stable_hash_text(text: str) -> str:
+    return hashlib.sha1(text.encode('utf-8')).hexdigest()
+
+
+def stable_hash_ids(ids_list: List[str]) -> str:
+    payload = json.dumps([str(item) for item in ids_list], ensure_ascii=False)
+    return stable_hash_text(payload)
+
+
+def stable_hash_params(params_source) -> str:
+    params = utils.cargar_parametros_estandarizacion(params_source)
+    params = params.sort_values('names').reset_index(drop=True)
+    payload = params.to_csv(index=False, float_format='%.17g')
+    return stable_hash_text(payload)
+
+
+def build_artifact_signature(artifact) -> dict:
+    if isinstance(artifact, str) and os.path.exists(artifact):
+        stat = os.stat(artifact)
+        return {
+            'path': normalize_project_path(artifact),
+            'size': int(stat.st_size),
+            'mtime_ns': int(stat.st_mtime_ns),
+        }
+
+    return {'artifact': artifact}
+
+
+def build_cache_metadata(model_key: str, spec: Dict, datasets: Dict) -> Dict:
+    return {
+        'schema_version': 2,
+        'model_key': model_key,
+        'model_label': spec['label'],
+        'model_source': spec.get('source'),
+        'artifact_signature': build_artifact_signature(spec.get('artifact')),
+        'input_size': int(datasets['input_size']),
+        'output_size': int(datasets['output_size']),
+        'eval_shape': list(datasets['y_test'].shape),
+        'fit_shape': list(datasets['y_va'].shape),
+        'ids_eval_hash': stable_hash_ids(datasets['ids_test']),
+        'ids_fit_hash': stable_hash_ids(datasets['ids_va']),
+        'params_eval_hash': stable_hash_params(datasets['params_eval']),
+        'params_fit_hash': stable_hash_params(datasets['params_fit']),
+        'split_source': datasets.get('split_source'),
+        'split_seed': datasets.get('split_seed'),
+        'split_70_path': normalize_project_path(datasets.get('split_70_path')),
+        'split_30_path': normalize_project_path(datasets.get('split_30_path')),
+        'dropped_overlap_columns': list(datasets.get('dropped_overlap_columns', [])),
+    }
 
 
 def resolve_split_paths(split_70_path: str = None, split_30_path: str = None) -> Tuple[str | None, str | None]:
@@ -125,8 +199,17 @@ def verify_predefined_split(
         )
 
     df_selected_mean = utils.loadAllFiles(dataset_dir)
-    recomputed_70, recomputed_30 = utils.selectRandomColumns(df_selected_mean, seed=split_seed)
+    legacy_split_fn = getattr(utils, '_legacy_selectRandomColumns', utils.selectRandomColumns)
+    recomputed_70, recomputed_30 = legacy_split_fn(df_selected_mean, seed=split_seed)
     saved_70, saved_30 = utils.load_predefined_split(split_70_path, split_30_path)
+    recomputed_70, recomputed_30, recomputed_overlap = utils.sanitize_split_dataframes(
+        recomputed_70,
+        recomputed_30,
+    )
+    saved_70, saved_30, saved_overlap = utils.sanitize_split_dataframes(
+        saved_70,
+        saved_30,
+    )
 
     comparison = utils.compare_split_dataframes(
         recomputed_70,
@@ -137,8 +220,10 @@ def verify_predefined_split(
     comparison.update(
         {
             'split_seed': split_seed,
-            'split_70_path': split_70_path,
-            'split_30_path': split_30_path,
+            'split_70_path': normalize_project_path(split_70_path),
+            'split_30_path': normalize_project_path(split_30_path),
+            'saved_overlap_columns': saved_overlap,
+            'recomputed_overlap_columns': recomputed_overlap,
         }
     )
     return comparison
@@ -155,22 +240,31 @@ def load_split_dataframes(
     if split_70_path is not None and split_30_path is not None:
         print(f'Usando split predefinido: {split_70_path} | {split_30_path}')
         df_70, df_30 = utils.load_predefined_split(split_70_path, split_30_path)
+        df_70, df_30, dropped_overlap_columns = utils.sanitize_split_dataframes(df_70, df_30)
+        if dropped_overlap_columns:
+            print(
+                'Aviso: se excluyen columnas solapadas del split legacy para evitar leakage: '
+                f'{dropped_overlap_columns}'
+            )
         metadata = {
             'split_source': 'predefined_csv',
             'split_seed': split_seed,
             'split_70_path': split_70_path,
             'split_30_path': split_30_path,
+            'dropped_overlap_columns': dropped_overlap_columns,
         }
         return df_70, df_30, metadata
 
     df_selected_mean = utils.loadAllFiles(dataset_dir)
     df_70, df_30 = utils.selectRandomColumns(df_selected_mean, seed=split_seed)
+    df_70, df_30, dropped_overlap_columns = utils.sanitize_split_dataframes(df_70, df_30)
     print(f'Usando split regenerado desde dataset con seed={split_seed}.')
     metadata = {
         'split_source': 'dataset_random_split',
         'split_seed': split_seed,
         'split_70_path': None,
         'split_30_path': None,
+        'dropped_overlap_columns': dropped_overlap_columns,
     }
     return df_70, df_30, metadata
 
@@ -189,6 +283,7 @@ def prepare_datasets(
     print('=' * 60)
     print('Preparando dataset')
     print('=' * 60)
+    ensure_dir(cache_dir)
 
     df_70, df_30, split_metadata = load_split_dataframes(
         dataset_dir=dataset_dir,
@@ -203,7 +298,7 @@ def prepare_datasets(
     df_scaled_30, params_eval = utils.estandarizar(df_30, path_est_30)
 
     X_train, y_train, ids_train = utils.series_to_supervised_matrix(
-        df_scaled_70.iloc[:, :-2], input_size=input_size, output_size=output_size
+        df_scaled_70, input_size=input_size, output_size=output_size
     )
     X_tr, X_va, y_tr, y_va, ids_tr, ids_va = train_test_split(
         X_train,
@@ -213,7 +308,7 @@ def prepare_datasets(
         random_state=random_state,
     )
     X_test, y_test, ids_list_te = utils.series_to_supervised_matrix(
-        df_scaled_30.iloc[:, :-2], input_size=input_size, output_size=output_size
+        df_scaled_30, input_size=input_size, output_size=output_size
     )
 
     print(f'X_tr={X_tr.shape}, y_tr={y_tr.shape}')
@@ -349,24 +444,51 @@ def prediction_cache_paths(cache_dir: str, model_key: str) -> Dict[str, str]:
     }
 
 
-def load_cached_predictions(paths: Dict[str, str]):
+def load_cached_predictions(paths: Dict[str, str], expected_metadata: Dict = None):
     if not all(os.path.exists(paths[key]) for key in ['eval', 'fit', 'metrics']):
         return None
 
     with open(paths['metrics'], 'r', encoding='utf-8') as f:
-        metrics = json.load(f)
+        payload = json.load(f)
+
+    if not isinstance(payload, dict) or 'metrics' not in payload or 'metadata' not in payload:
+        print('Cache legacy/incompleto detectado; se recomputa para evitar inconsistencias.')
+        return None
+
+    cached_metadata = payload['metadata']
+    if expected_metadata is not None and cached_metadata != expected_metadata:
+        print('Cache incompatible con el dataset/modelo actual; se recomputa.')
+        return None
+
+    eval_pred = np.load(paths['eval'])
+    fit_pred = np.load(paths['fit'])
+    if expected_metadata is not None:
+        if list(eval_pred.shape) != expected_metadata['eval_shape']:
+            print('Cache invalido: shape de eval no coincide; se recomputa.')
+            return None
+        if list(fit_pred.shape) != expected_metadata['fit_shape']:
+            print('Cache invalido: shape de fit no coincide; se recomputa.')
+            return None
+
     return {
-        'eval': np.load(paths['eval']),
-        'fit': np.load(paths['fit']),
-        'metrics': metrics,
+        'eval': eval_pred,
+        'fit': fit_pred,
+        'metrics': payload['metrics'],
+        'metadata': cached_metadata,
     }
 
 
-def save_cached_predictions(paths: Dict[str, str], y_eval: np.ndarray, y_fit: np.ndarray, metrics: dict):
+def save_cached_predictions(
+    paths: Dict[str, str],
+    y_eval: np.ndarray,
+    y_fit: np.ndarray,
+    metrics: dict,
+    metadata: Dict,
+):
     np.save(paths['eval'], y_eval)
     np.save(paths['fit'], y_fit)
     with open(paths['metrics'], 'w', encoding='utf-8') as f:
-        json.dump(metrics, f, indent=2)
+        json.dump({'metrics': metrics, 'metadata': metadata}, f, indent=2)
 
 
 def run_model(
@@ -379,9 +501,10 @@ def run_model(
     label = spec['label']
     print(f'\n{"=" * 60}\nModelo: {label}\n{"=" * 60}')
     paths = prediction_cache_paths(cache_dir, model_key)
+    expected_cache_metadata = build_cache_metadata(model_key, spec, datasets)
 
     if not force_recompute:
-        cached = load_cached_predictions(paths)
+        cached = load_cached_predictions(paths, expected_metadata=expected_cache_metadata)
         if cached is not None:
             print(f'Usando cache local para {label}.')
             return cached
@@ -411,11 +534,12 @@ def run_model(
     )
     metrics = utils.evaluate_all_metrics(y_test_original, y_eval_original)
 
-    save_cached_predictions(paths, y_eval, y_fit, metrics)
+    save_cached_predictions(paths, y_eval, y_fit, metrics, expected_cache_metadata)
     return {
         'eval': y_eval,
         'fit': y_fit,
         'metrics': metrics,
+        'metadata': expected_cache_metadata,
     }
 
 
@@ -423,15 +547,18 @@ def align_predictions(y_true: np.ndarray, predictions: Dict[str, np.ndarray]) ->
     if not predictions:
         return y_true, predictions, y_true.shape[0]
 
-    sizes = [y_true.shape[0]]
-    sizes.extend(pred.shape[0] for pred in predictions.values())
-    aligned_n = min(sizes)
-    y_true_aligned = y_true[:aligned_n]
-    predictions_aligned = {
-        name: pred[:aligned_n]
+    expected_shape = y_true.shape
+    mismatches = {
+        name: pred.shape
         for name, pred in predictions.items()
+        if pred.shape != expected_shape
     }
-    return y_true_aligned, predictions_aligned, aligned_n
+    if mismatches:
+        raise ValueError(
+            f'Predicciones desalineadas. y_true={expected_shape}, predicciones={mismatches}'
+        )
+
+    return y_true, predictions, y_true.shape[0]
 
 
 def trim_ids(ids_list: List[str], length: int) -> List[str]:
@@ -609,9 +736,6 @@ def main():
     ids_test = original_scale['ids_eval']
     eval_n = original_scale['eval_n']
 
-    if eval_n != datasets['y_test'].shape[0]:
-        print(f'\nAviso: recortando eval a {eval_n} ventanas para alinear predicciones.')
-
     datasets['y_test_scaled'] = datasets['y_test']
     datasets['y_va_scaled'] = datasets['y_va']
     datasets['y_test'] = original_scale['y_true_eval']
@@ -643,6 +767,7 @@ def main():
             y_true_fit=datasets['y_va'],
             select_by=args.select_by,
             objective_metric=args.objective_metric,
+            active_method=args.ensemble_active_method,
         )
         ensemble_prediction = ens.predict()
 
