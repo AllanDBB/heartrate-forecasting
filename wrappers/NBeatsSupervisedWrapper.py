@@ -31,7 +31,7 @@ def _get_nbeats_block_class():
             self.fc2 = Dense(units, activation='relu', name='fc2')
             self.fc3 = Dense(units, activation='relu', name='fc3')
             self.fc4 = Dense(units, activation='relu', name='fc4')
-            self.theta = Dense(expansion, name='theta_layer')
+            self.theta_layer = Dense(expansion, name='theta_layer')
 
         def build(self, input_shape):
             current_shape = tf.TensorShape(input_shape)
@@ -40,7 +40,7 @@ def _get_nbeats_block_class():
             self.fc2.build(current_shape)
             self.fc3.build(current_shape)
             self.fc4.build(current_shape)
-            self.theta.build(current_shape)
+            self.theta_layer.build(current_shape)
             super().build(input_shape)
 
         def call(self, inputs):
@@ -48,7 +48,7 @@ def _get_nbeats_block_class():
             x = self.fc2(x)
             x = self.fc3(x)
             x = self.fc4(x)
-            return self.theta(x)
+            return self.theta_layer(x)
 
         def compute_output_shape(self, input_shape):
             input_shape = tf.TensorShape(input_shape).as_list()
