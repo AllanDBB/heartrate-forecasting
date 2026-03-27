@@ -8,13 +8,12 @@ import pandas as pd
 from sklearn.model_selection import train_test_split
 
 import utils
+PROJECT_DIR = os.path.dirname(os.path.abspath(__file__))
 from wrappers.EnsembleWrapper import EnsembleWrapper
 from wrappers.KerasPretrainedWrapper import KerasPretrainedWrapper
 
 
-DEFAULT_MODELS = [
-    'moment',
-    'moirai',
+LOCAL_PRETRAINED_MODELS = [
     'tcn',
     'nbeats',
     'lstm',
@@ -22,6 +21,14 @@ DEFAULT_MODELS = [
     'encdec',
     'itrans',
 ]
+FOUNDATION_MODELS = [
+    'moment',
+    'moirai',
+]
+DEFAULT_MODELS = list(LOCAL_PRETRAINED_MODELS)
+ALL_MODELS = list(FOUNDATION_MODELS) + list(LOCAL_PRETRAINED_MODELS)
+DEFAULT_SPLIT_70_CSV = os.path.join(PROJECT_DIR, 'configs', 'df_70.csv')
+DEFAULT_SPLIT_30_CSV = os.path.join(PROJECT_DIR, 'configs', 'df_30.csv')
 
 
 def parse_args():
@@ -35,10 +42,26 @@ def parse_args():
     parser.add_argument('--validation-size', type=float, default=0.1, help='Fraccion para validacion.')
     parser.add_argument('--random-state', type=int, default=42, help='Semilla de train/val split.')
     parser.add_argument(
+        '--split-seed',
+        type=int,
+        default=42,
+        help='Semilla usada para regenerar el split 70/30 cuando no se cargan CSVs predefinidos.',
+    )
+    parser.add_argument(
+        '--split-70-csv',
+        default=None,
+        help='CSV con el 70% usado para entrenar los modelos preentrenados.',
+    )
+    parser.add_argument(
+        '--split-30-csv',
+        default=None,
+        help='CSV con el 30% usado para evaluacion y desescalizacion.',
+    )
+    parser.add_argument(
         '--models',
         nargs='+',
         default=DEFAULT_MODELS,
-        help='Subconjunto de modelos a ejecutar.',
+        help='Subconjunto de modelos a ejecutar. Por defecto usa solo los modelos locales ya entrenados.',
     )
     parser.add_argument(
         '--select-by',
@@ -67,6 +90,91 @@ def ensure_dir(path: str):
     os.makedirs(path, exist_ok=True)
 
 
+def project_path(*parts: str) -> str:
+    return os.path.join(PROJECT_DIR, *parts)
+
+
+def resolve_split_paths(split_70_path: str = None, split_30_path: str = None) -> Tuple[str | None, str | None]:
+    if split_70_path is None and split_30_path is None:
+        if os.path.exists(DEFAULT_SPLIT_70_CSV) and os.path.exists(DEFAULT_SPLIT_30_CSV):
+            return DEFAULT_SPLIT_70_CSV, DEFAULT_SPLIT_30_CSV
+        return None, None
+
+    if bool(split_70_path) != bool(split_30_path):
+        raise ValueError('Debes indicar ambos CSVs del split: --split-70-csv y --split-30-csv.')
+
+    if not os.path.exists(split_70_path):
+        raise FileNotFoundError(f'No existe el split 70%: {split_70_path}')
+    if not os.path.exists(split_30_path):
+        raise FileNotFoundError(f'No existe el split 30%: {split_30_path}')
+
+    return split_70_path, split_30_path
+
+
+def verify_predefined_split(
+    dataset_dir: str,
+    split_seed: int = 42,
+    split_70_path: str = None,
+    split_30_path: str = None,
+):
+    split_70_path, split_30_path = resolve_split_paths(split_70_path, split_30_path)
+    if split_70_path is None or split_30_path is None:
+        raise FileNotFoundError(
+            'No hay CSVs predefinidos para verificar. Coloca configs/df_70.csv y configs/df_30.csv '
+            'o pasa las rutas por argumento.'
+        )
+
+    df_selected_mean = utils.loadAllFiles(dataset_dir)
+    recomputed_70, recomputed_30 = utils.selectRandomColumns(df_selected_mean, seed=split_seed)
+    saved_70, saved_30 = utils.load_predefined_split(split_70_path, split_30_path)
+
+    comparison = utils.compare_split_dataframes(
+        recomputed_70,
+        recomputed_30,
+        saved_70,
+        saved_30,
+    )
+    comparison.update(
+        {
+            'split_seed': split_seed,
+            'split_70_path': split_70_path,
+            'split_30_path': split_30_path,
+        }
+    )
+    return comparison
+
+
+def load_split_dataframes(
+    dataset_dir: str,
+    split_seed: int = 42,
+    split_70_path: str = None,
+    split_30_path: str = None,
+):
+    split_70_path, split_30_path = resolve_split_paths(split_70_path, split_30_path)
+
+    if split_70_path is not None and split_30_path is not None:
+        print(f'Usando split predefinido: {split_70_path} | {split_30_path}')
+        df_70, df_30 = utils.load_predefined_split(split_70_path, split_30_path)
+        metadata = {
+            'split_source': 'predefined_csv',
+            'split_seed': split_seed,
+            'split_70_path': split_70_path,
+            'split_30_path': split_30_path,
+        }
+        return df_70, df_30, metadata
+
+    df_selected_mean = utils.loadAllFiles(dataset_dir)
+    df_70, df_30 = utils.selectRandomColumns(df_selected_mean, seed=split_seed)
+    print(f'Usando split regenerado desde dataset con seed={split_seed}.')
+    metadata = {
+        'split_source': 'dataset_random_split',
+        'split_seed': split_seed,
+        'split_70_path': None,
+        'split_30_path': None,
+    }
+    return df_70, df_30, metadata
+
+
 def prepare_datasets(
     dataset_dir: str,
     cache_dir: str,
@@ -74,13 +182,20 @@ def prepare_datasets(
     output_size: int,
     validation_size: float,
     random_state: int,
+    split_seed: int = 42,
+    split_70_path: str = None,
+    split_30_path: str = None,
 ):
     print('=' * 60)
     print('Preparando dataset')
     print('=' * 60)
 
-    df_selected_mean = utils.loadAllFiles(dataset_dir)
-    df_70, df_30 = utils.selectRandomColumns(df_selected_mean)
+    df_70, df_30, split_metadata = load_split_dataframes(
+        dataset_dir=dataset_dir,
+        split_seed=split_seed,
+        split_70_path=split_70_path,
+        split_30_path=split_30_path,
+    )
 
     path_est_70 = os.path.join(cache_dir, 'values_deses_70.csv')
     path_est_30 = os.path.join(cache_dir, 'values_deses_30.csv')
@@ -119,6 +234,7 @@ def prepare_datasets(
         'params_eval': params_eval,
         'input_size': input_size,
         'output_size': output_size,
+        **split_metadata,
     }
 
 
@@ -128,49 +244,73 @@ def build_model_registry() -> Dict[str, Dict]:
             'label': 'MOMENT',
             'factory': _build_moment_wrapper,
             'needs_fit': True,
+            'source': 'foundation',
+            'artifact': 'AutonLab/MOMENT-1-large',
         },
         'moirai': {
             'label': 'Moirai',
             'factory': _build_moirai_wrapper,
             'needs_fit': True,
+            'source': 'foundation',
+            'artifact': 'Salesforce/moirai-1.1-R-small',
         },
         'tcn': {
             'label': 'TCN',
             'factory': _build_tcn_wrapper,
             'needs_fit': False,
+            'source': 'local_pretrained',
+            'artifact': project_path('modelos', 'tcn_0.keras'),
         },
         'nbeats': {
             'label': 'NBEATS',
             'factory': _build_nbeats_wrapper,
             'needs_fit': False,
+            'source': 'local_pretrained',
+            'artifact': project_path('modelos', 'nbeats_0.keras'),
         },
         'lstm': {
             'label': 'LSTM',
-            'factory': lambda: KerasPretrainedWrapper('modelos/lstm_2.keras', batch_size=32, name='LSTM').load(),
+            'factory': lambda: KerasPretrainedWrapper(
+                project_path('modelos', 'lstm_2.keras'),
+                batch_size=32,
+                name='LSTM',
+            ).load(),
             'needs_fit': False,
+            'source': 'local_pretrained',
+            'artifact': project_path('modelos', 'lstm_2.keras'),
         },
         'tide': {
             'label': 'TiDE',
-            'factory': lambda: KerasPretrainedWrapper('modelos/tide_0.keras', batch_size=32, name='TiDE').load(),
+            'factory': lambda: KerasPretrainedWrapper(
+                project_path('modelos', 'tide_0.keras'),
+                batch_size=32,
+                name='TiDE',
+            ).load(),
             'needs_fit': False,
+            'source': 'local_pretrained',
+            'artifact': project_path('modelos', 'tide_0.keras'),
         },
         'encdec': {
             'label': 'Encoder-Decoder LSTM',
             'factory': lambda: KerasPretrainedWrapper(
-                'modelos/encDec_2.keras',
+                project_path('modelos', 'encDec_2.keras'),
                 batch_size=32,
                 name='Encoder-Decoder LSTM',
             ).load(),
             'needs_fit': False,
+            'source': 'local_pretrained',
+            'artifact': project_path('modelos', 'encDec_2.keras'),
         },
         'itrans': {
             'label': 'i-Transformer',
             'factory': lambda: KerasPretrainedWrapper(
-                'modelos/itrans_2.keras',
+                project_path('modelos', 'itrans_2.keras'),
                 batch_size=32,
                 name='i-Transformer',
             ).load(),
             'needs_fit': False,
+            'source': 'local_pretrained',
+            'artifact': project_path('modelos', 'itrans_2.keras'),
         },
     }
 
@@ -178,25 +318,25 @@ def build_model_registry() -> Dict[str, Dict]:
 def _build_moment_wrapper():
     from wrappers.MomentSupervisedWrapper import MomentSupervisedWrapper
 
-    return MomentSupervisedWrapper(config_path='configs/moment_config.yaml')
+    return MomentSupervisedWrapper(config_path=project_path('configs', 'moment_config.yaml'))
 
 
 def _build_moirai_wrapper():
     from wrappers.MoiraiSupervisedWrapper import MoiraiSupervisedWrapper
 
-    return MoiraiSupervisedWrapper(config_path='configs/moirai_config.yaml')
+    return MoiraiSupervisedWrapper(config_path=project_path('configs', 'moirai_config.yaml'))
 
 
 def _build_tcn_wrapper():
     from wrappers.TCNSupervisedWrapper import TCNSupervisedWrapper
 
-    return TCNSupervisedWrapper(config_path='configs/tcn_config.yaml')
+    return TCNSupervisedWrapper(config_path=project_path('configs', 'tcn_config.yaml'))
 
 
 def _build_nbeats_wrapper():
     from wrappers.NBeatsSupervisedWrapper import NBeatsSupervisedWrapper
 
-    return NBeatsSupervisedWrapper(config_path='configs/nbeats_config.yaml')
+    return NBeatsSupervisedWrapper(config_path=project_path('configs', 'nbeats_config.yaml'))
 
 
 def prediction_cache_paths(cache_dir: str, model_key: str) -> Dict[str, str]:
@@ -429,6 +569,9 @@ def main():
         output_size=args.output_size,
         validation_size=args.validation_size,
         random_state=args.random_state,
+        split_seed=args.split_seed,
+        split_70_path=args.split_70_csv,
+        split_30_path=args.split_30_csv,
     )
 
     individual_results = {}

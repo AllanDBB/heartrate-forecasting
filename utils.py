@@ -723,7 +723,78 @@ def estandarization(df, pathEst):
 
     return df_scaled
 
-def selectRandomColumns(df):
+def read_split_dataframe(csv_path):
+    """
+    Read a saved split CSV and drop the implicit index column if it exists.
+    """
+    df = pd.read_csv(csv_path)
+    unnamed_cols = [col for col in df.columns if str(col).startswith('Unnamed:')]
+    if unnamed_cols:
+        df = df.drop(columns=unnamed_cols)
+    return df
+
+
+def load_predefined_split(split_70_path, split_30_path):
+    """
+    Load the saved 70/30 split exactly as it was exported.
+    """
+    return read_split_dataframe(split_70_path), read_split_dataframe(split_30_path)
+
+
+def compare_split_dataframes(expected_70, expected_30, observed_70, observed_30, atol=1e-10):
+    """
+    Compare two 70/30 split pairs. Values are compared after aligning columns,
+    so the report distinguishes between split content and column ordering.
+    """
+
+    def _compare(expected_df, observed_df, label):
+        same_shape = expected_df.shape == observed_df.shape
+        same_columns_exact = list(expected_df.columns) == list(observed_df.columns)
+        same_column_set = set(expected_df.columns) == set(observed_df.columns)
+        values_allclose = False
+        max_abs_diff = None
+
+        if same_shape and same_column_set:
+            observed_aligned = observed_df[expected_df.columns]
+            expected_values = expected_df.to_numpy(dtype=float)
+            observed_values = observed_aligned.to_numpy(dtype=float)
+            values_allclose = bool(
+                np.allclose(expected_values, observed_values, equal_nan=True, atol=atol)
+            )
+            if expected_values.size:
+                max_abs_diff = float(np.nanmax(np.abs(expected_values - observed_values)))
+            else:
+                max_abs_diff = 0.0
+
+        return {
+            f'{label}_shape': expected_df.shape,
+            f'{label}_same_shape': same_shape,
+            f'{label}_same_columns_exact': same_columns_exact,
+            f'{label}_same_column_set': same_column_set,
+            f'{label}_values_allclose': values_allclose,
+            f'{label}_max_abs_diff': max_abs_diff,
+        }
+
+    comparison = {}
+    comparison.update(_compare(expected_70, observed_70, 'split_70'))
+    comparison.update(_compare(expected_30, observed_30, 'split_30'))
+    comparison['matches_by_content'] = (
+        comparison['split_70_same_shape']
+        and comparison['split_70_same_column_set']
+        and comparison['split_70_values_allclose']
+        and comparison['split_30_same_shape']
+        and comparison['split_30_same_column_set']
+        and comparison['split_30_values_allclose']
+    )
+    comparison['matches_exact_layout'] = (
+        comparison['matches_by_content']
+        and comparison['split_70_same_columns_exact']
+        and comparison['split_30_same_columns_exact']
+    )
+    return comparison
+
+
+def selectRandomColumns(df, seed=42):
   '''
   Function to select validation from rows sampled randomly
   '''
@@ -734,12 +805,13 @@ def selectRandomColumns(df):
   other_cols = df.columns[:-2].tolist()
 
   # Seleccionar aleatoriamente 70% de columnas (distintas de las dos últimas)
-  np.random.seed(42)
+  rng = np.random.RandomState(seed)
   n_70 = int(len(other_cols) * 0.7)
-  cols_70 = np.random.choice(other_cols, size=n_70, replace=False)
+  cols_70 = rng.choice(other_cols, size=n_70, replace=False).tolist()
 
   # El resto serán 30%
-  cols_30 = list(set(other_cols) - set(cols_70))
+  cols_70_set = set(cols_70)
+  cols_30 = [col for col in other_cols if col not in cols_70_set]
 
 
   # Construcción de los dos nuevos DataFrames conservando las últimas dos al final
