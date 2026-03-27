@@ -52,6 +52,16 @@ def _build_custom_objects():
             self.dropout2 = tf.keras.layers.Dropout(dropout_rate, name='dropout2')
             self.layer_norm = tf.keras.layers.LayerNormalization(name='layer_norm')
 
+        def build(self, input_shape):
+            input_shape = tf.TensorShape(input_shape)
+            self.dense1.build(input_shape)
+            hidden_shape = tf.TensorShape([input_shape[0], self.hidden_dim])
+            self.dropout1.build(hidden_shape)
+            self.dense2.build(hidden_shape)
+            self.dropout2.build(hidden_shape)
+            self.layer_norm.build(input_shape)
+            super().build(input_shape)
+
         def call(self, inputs, training=None):
             x = self.dense1(inputs)
             x = self.dropout1(x, training=training)
@@ -240,6 +250,21 @@ def _build_custom_objects():
             self.ffn_dense2 = tf.keras.layers.Dense(d_model)
             self.dropout2 = tf.keras.layers.Dropout(dropout)
             self.norm2 = tf.keras.layers.LayerNormalization(name='norm2')
+
+        def build(self, input_shape):
+            input_shape = tf.TensorShape(input_shape)
+            try:
+                self.attention.build(input_shape, input_shape, input_shape)
+            except TypeError:
+                self.attention.build(input_shape, input_shape)
+            self.dropout1.build(input_shape)
+            self.norm1.build(input_shape)
+            self.ffn_dense1.build(input_shape)
+            ffn_shape = tf.TensorShape([input_shape[0], input_shape[1], self.d_ff])
+            self.ffn_dense2.build(ffn_shape)
+            self.dropout2.build(input_shape)
+            self.norm2.build(input_shape)
+            super().build(input_shape)
 
         def call(self, inputs, training=None):
             attn_output = self.attention(inputs, inputs, training=training)
