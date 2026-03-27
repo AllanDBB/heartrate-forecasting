@@ -19,32 +19,35 @@ def _get_nbeats_block_class():
     import tensorflow as tf
     from tensorflow.keras.layers import Dense, Layer
 
-    @tf.keras.utils.register_keras_serializable(package='Custom', name='NBeatsBlock')
+    @tf.keras.utils.register_keras_serializable(name='NBeatsBlock')
     class NBeatsBlock(Layer):
         def __init__(self, units=256, expansion=200, **kwargs):
             super().__init__(**kwargs)
             self.units = units
             self.expansion = expansion
-            self.hidden_layers = [
-                Dense(units, activation='relu', name='fc1'),
-                Dense(units, activation='relu', name='fc2'),
-                Dense(units, activation='relu', name='fc3'),
-                Dense(units, activation='relu', name='fc4'),
-            ]
+            # Keep the original sublayer attribute layout so Keras can map
+            # the serialized weights from the .keras artifact correctly.
+            self.fc1 = Dense(units, activation='relu', name='fc1')
+            self.fc2 = Dense(units, activation='relu', name='fc2')
+            self.fc3 = Dense(units, activation='relu', name='fc3')
+            self.fc4 = Dense(units, activation='relu', name='fc4')
             self.theta = Dense(expansion, name='theta_layer')
 
         def build(self, input_shape):
             current_shape = tf.TensorShape(input_shape)
-            for layer in self.hidden_layers:
-                layer.build(current_shape)
-                current_shape = tf.TensorShape([current_shape[0], self.units])
+            self.fc1.build(current_shape)
+            current_shape = tf.TensorShape([current_shape[0], self.units])
+            self.fc2.build(current_shape)
+            self.fc3.build(current_shape)
+            self.fc4.build(current_shape)
             self.theta.build(current_shape)
             super().build(input_shape)
 
         def call(self, inputs):
-            x = inputs
-            for layer in self.hidden_layers:
-                x = layer(x)
+            x = self.fc1(inputs)
+            x = self.fc2(x)
+            x = self.fc3(x)
+            x = self.fc4(x)
             return self.theta(x)
 
         def compute_output_shape(self, input_shape):
@@ -133,7 +136,12 @@ class NBeatsSupervisedWrapper:
 
         self.model = tf.keras.models.load_model(
             path,
-            custom_objects={'NBeatsBlock': NBeatsBlock},
+            custom_objects={
+                'NBeatsBlock': NBeatsBlock,
+                'Custom>NBeatsBlock': NBeatsBlock,
+            },
+            compile=False,
+            safe_mode=False,
         )
         print(f"Modelo NBEATS cargado desde: {path}")
 

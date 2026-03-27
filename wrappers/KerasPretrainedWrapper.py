@@ -105,6 +105,31 @@ def _build_custom_objects():
             self.temporal_decoder = tf.keras.layers.Dense(temporal_hidden_dim, activation='relu')
             self.output_projection = tf.keras.layers.Dense(1)
 
+        def build(self, input_shape):
+            input_shape = tf.TensorShape(input_shape)
+            feature_dim = 1
+            if input_shape.rank == 3 and input_shape[-1] is not None:
+                feature_dim = int(input_shape[-1])
+            flat_dim = self.input_length * feature_dim
+            self.input_projection.build(tf.TensorShape([input_shape[0], flat_dim]))
+
+            current_shape = tf.TensorShape([input_shape[0], self.hidden_dim])
+            for block in self.encoder_blocks:
+                block.build(current_shape)
+            for block in self.decoder_blocks:
+                block.build(current_shape)
+
+            self.temporal_projection.build(current_shape)
+            temporal_shape = tf.TensorShape([input_shape[0], self.horizon, self.temporal_hidden_dim])
+            self.temporal_decoder.build(temporal_shape)
+            self.output_projection.build(temporal_shape)
+            super().build(input_shape)
+
+        def build_from_config(self, config):
+            input_shape = config.get('input_shape')
+            if input_shape is not None:
+                self.build(input_shape)
+
         def call(self, inputs, training=None):
             x = tf.convert_to_tensor(inputs)
             if x.shape.rank == 3:
@@ -147,9 +172,11 @@ def _build_custom_objects():
             self.num_features = num_features
             self.eps = eps
             self.affine = affine
+            self.affine_weight = None
+            self.affine_bias = None
 
         def build(self, input_shape):
-            if self.affine:
+            if self.affine and self.affine_weight is None:
                 self.affine_weight = self.add_weight(
                     name='affine_weight',
                     shape=(self.num_features,),
@@ -165,6 +192,8 @@ def _build_custom_objects():
             super().build(input_shape)
 
         def normalize(self, inputs):
+            if self.affine and self.affine_weight is None:
+                self.build(inputs.shape)
             mean = tf.reduce_mean(inputs, axis=1, keepdims=True)
             std = tf.math.reduce_std(inputs, axis=1, keepdims=True) + self.eps
             outputs = (inputs - mean) / std
@@ -265,6 +294,30 @@ def _build_custom_objects():
             ]
             self.head = tf.keras.layers.Dense(pred_len)
 
+        def build(self, input_shape):
+            input_shape = tf.TensorShape(input_shape)
+            if input_shape.rank == 2:
+                current_shape = tf.TensorShape([input_shape[0], input_shape[1], 1])
+            elif input_shape.rank == 3:
+                current_shape = input_shape
+            else:
+                raise ValueError(
+                    f"iTransformer espera input_shape rank 2 o 3. Recibido: {input_shape}"
+                )
+
+            self.inorm.build(current_shape)
+            self.input_proj.build(current_shape)
+            current_shape = tf.TensorShape([current_shape[0], current_shape[1], self.d_model])
+            for block in self.blocks:
+                block.build(current_shape)
+            self.head.build(tf.TensorShape([current_shape[0], self.d_model]))
+            super().build(input_shape)
+
+        def build_from_config(self, config):
+            input_shape = config.get('input_shape')
+            if input_shape is not None:
+                self.build(input_shape)
+
         def call(self, inputs, training=None):
             x = tf.convert_to_tensor(inputs)
             if x.shape.rank == 2:
@@ -336,6 +389,7 @@ class KerasPretrainedWrapper:
             self.model_path,
             custom_objects=custom_objects,
             compile=False,
+            safe_mode=False,
         )
         return self.model
 
