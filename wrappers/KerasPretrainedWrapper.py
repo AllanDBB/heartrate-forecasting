@@ -385,6 +385,106 @@ def _build_custom_objects():
     }
 
 
+def _manual_load_custom_model(model_path, metadata, custom_objects):
+    """
+    Fallback loader for TiDE / iTransformer when ``load_model`` fails due to
+    weight-path mismatches across Keras versions.
+
+    Strategy:
+      1. Read weight shapes from the embedded ``model.weights.h5`` to infer
+         the true architecture hyper-parameters (e.g. ``d_model``).
+      2. Build the model with those parameters.
+      3. Assign weights by shape-group matching: within each unique shape,
+         ``h5`` arrays (sorted by path) are zipped with model variables
+         (sorted by ``var.path``).
+    """
+    import h5py
+    import tempfile
+    import zipfile
+    from collections import defaultdict
+
+    tf = _ensure_tensorflow()
+
+    # ---- extract h5 from .keras zip ----
+    with zipfile.ZipFile(model_path) as zf:
+        h5_data = zf.read('model.weights.h5')
+    h5_tmp = tempfile.mktemp(suffix='.h5')
+    with open(h5_tmp, 'wb') as fh:
+        fh.write(h5_data)
+
+    try:
+        # ---- collect non-optimizer weight arrays ----
+        h5_vars = []
+        with h5py.File(h5_tmp, 'r') as hf:
+            def _collect(name, obj):
+                if isinstance(obj, h5py.Dataset) and 'optimizer' not in name:
+                    h5_vars.append((name, np.array(obj)))
+            hf.visititems(_collect)
+        h5_vars.sort()
+
+        # ---- resolve constructor kwargs ----
+        registered = _canonical_registered_name(metadata)
+        cfg = {
+            k: v
+            for k, v in metadata.get('config', {}).items()
+            if k not in ('name', 'trainable', 'dtype') and not isinstance(v, dict)
+        }
+
+        # iTransformer: config may record wrong d_model — infer from weights
+        if registered == 'Custom>iTransformer':
+            for path, arr in h5_vars:
+                if path.startswith('input_proj/') and arr.ndim == 2:
+                    cfg['d_model'] = int(arr.shape[-1])
+                    break
+            for path, arr in h5_vars:
+                if '/ffn/' in path and 'dense/vars/0' in path and arr.ndim == 2:
+                    cfg['d_ff'] = int(arr.shape[-1])
+                    break
+            block_names = {
+                p.split('/')[1] for p, _ in h5_vars if p.startswith('blocks/')
+            }
+            if block_names:
+                cfg['num_layers'] = len(block_names)
+
+        # ---- build model ----
+        cls_map = {
+            'Custom>TiDEModel': ('TiDEModel', lambda c: [None, c.get('input_length', 200), 1]),
+            'Custom>iTransformer': ('iTransformer', lambda c: [None, c.get('seq_len', 200), 1]),
+        }
+        if registered not in cls_map:
+            raise ValueError(f"No manual loader for registered_name={registered}")
+
+        cls_name, shape_fn = cls_map[registered]
+        model = custom_objects[cls_name](**cfg)
+        model.build(tf.TensorShape(shape_fn(cfg)))
+
+        # ---- assign weights by shape-group matching ----
+        h5_by_shape = defaultdict(list)
+        for _, arr in h5_vars:
+            h5_by_shape[arr.shape].append(arr)
+
+        model_vars_sorted = sorted(model.variables, key=lambda v: v.path)
+        model_by_shape = defaultdict(list)
+        for v in model_vars_sorted:
+            model_by_shape[tuple(v.shape)].append(v)
+
+        assigned = 0
+        for shape, h5_list in h5_by_shape.items():
+            m_list = model_by_shape.get(shape, [])
+            for arr, var in zip(h5_list, m_list):
+                var.assign(arr)
+                assigned += 1
+
+        print(
+            f"  Fallback weight loading: {assigned}/{len(h5_vars)} weights assigned"
+        )
+
+    finally:
+        os.unlink(h5_tmp)
+
+    return model
+
+
 class KerasPretrainedWrapper:
     """
     Lightweight wrapper for local .keras forecasting artifacts.
@@ -420,12 +520,23 @@ class KerasPretrainedWrapper:
         except ImportError:
             pass
 
-        self.model = tf.keras.models.load_model(
-            self.model_path,
-            custom_objects=custom_objects,
-            compile=False,
-            safe_mode=False,
-        )
+        registered_name = _canonical_registered_name(self.metadata)
+
+        try:
+            self.model = tf.keras.models.load_model(
+                self.model_path,
+                custom_objects=custom_objects,
+                compile=False,
+                safe_mode=False,
+            )
+        except Exception:
+            # Fallback for cross-version weight-path mismatches (TiDE, iTransformer)
+            if registered_name not in ('Custom>TiDEModel', 'Custom>iTransformer'):
+                raise
+            self.model = _manual_load_custom_model(
+                self.model_path, self.metadata, custom_objects,
+            )
+
         return self.model
 
     def load(self):
