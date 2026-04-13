@@ -706,23 +706,6 @@ def preProcDataset(df_data):
     return dfSelectedMean
 
 
-def estandarization(df, pathEst):
-
-    # get columns excluding two last columns
-    cols = df.select_dtypes(include='number').columns
-    cols=cols[:-2]
-    # Crear scaler
-    scaler = StandardScaler()
-
-    # Entrenar scaler y transformar datos
-    df_scaled = df.copy()
-    df_scaled[cols] = scaler.fit_transform(df[cols])
-
-    # Guardar scaler para usarlo después
-    #joblib.dump(scaler, pathEst)
-
-    return df_scaled
-
 def read_split_dataframe(csv_path):
     """
     Read a saved split CSV and drop the implicit index column if it exists.
@@ -958,3 +941,25 @@ def desestandarizar_predicciones(predictions_dict, ids_list, params_source):
         name: desestandarizar_ventanas(predictions, ids_list, params_source)
         for name, predictions in predictions_dict.items()
     }
+
+
+def deses(objetivo, ids_list, parametros):
+    """
+    Desestandariza un array 2D de predicciones usando la tabla de parametros guardada.
+
+    Formula: objetivo * desviacion + media  (inversa de estandarizar)
+
+    Args:
+        objetivo   : np.ndarray de shape (N, horizonte) — predicciones estandarizadas
+        ids_list   : lista de N strings con el nombre de la serie para cada fila
+        parametros : DataFrame con columnas ['names', 'media', 'desviacion']
+
+    Returns:
+        np.ndarray de shape (N, horizonte) en escala original
+    """
+    df_ids = pd.DataFrame({"names": ids_list})
+    df_resultado = df_ids.merge(parametros, on="names", how="left")
+    return (
+        (objetivo * np.array(df_resultado['desviacion']).reshape(-1, 1))
+        + np.array(df_resultado['media']).reshape(-1, 1)
+    )

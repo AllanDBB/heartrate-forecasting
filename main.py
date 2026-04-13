@@ -28,8 +28,8 @@ FOUNDATION_MODELS = [
 ]
 DEFAULT_MODELS = list(LOCAL_PRETRAINED_MODELS)
 ALL_MODELS = list(FOUNDATION_MODELS) + list(LOCAL_PRETRAINED_MODELS)
-DEFAULT_SPLIT_70_CSV = os.path.join(PROJECT_DIR, 'configs', 'df_70.csv')
-DEFAULT_SPLIT_30_CSV = os.path.join(PROJECT_DIR, 'configs', 'df_30.csv')
+DEFAULT_SPLIT_70_CSV = os.path.join(PROJECT_DIR, 'nueva_info', 'df_70.csv')
+DEFAULT_SPLIT_30_CSV = os.path.join(PROJECT_DIR, 'nueva_info', 'df_30.csv')
 DEFAULT_ENSEMBLE_ACTIVE_METHOD = 'optimize'
 
 
@@ -185,49 +185,6 @@ def resolve_split_paths(split_70_path: str = None, split_30_path: str = None) ->
     return split_70_path, split_30_path
 
 
-def verify_predefined_split(
-    dataset_dir: str,
-    split_seed: int = 42,
-    split_70_path: str = None,
-    split_30_path: str = None,
-):
-    split_70_path, split_30_path = resolve_split_paths(split_70_path, split_30_path)
-    if split_70_path is None or split_30_path is None:
-        raise FileNotFoundError(
-            'No hay CSVs predefinidos para verificar. Coloca configs/df_70.csv y configs/df_30.csv '
-            'o pasa las rutas por argumento.'
-        )
-
-    df_selected_mean = utils.loadAllFiles(dataset_dir)
-    legacy_split_fn = getattr(utils, '_legacy_selectRandomColumns', utils.selectRandomColumns)
-    recomputed_70, recomputed_30 = legacy_split_fn(df_selected_mean, seed=split_seed)
-    saved_70, saved_30 = utils.load_predefined_split(split_70_path, split_30_path)
-    recomputed_70, recomputed_30, recomputed_overlap = utils.sanitize_split_dataframes(
-        recomputed_70,
-        recomputed_30,
-    )
-    saved_70, saved_30, saved_overlap = utils.sanitize_split_dataframes(
-        saved_70,
-        saved_30,
-    )
-
-    comparison = utils.compare_split_dataframes(
-        recomputed_70,
-        recomputed_30,
-        saved_70,
-        saved_30,
-    )
-    comparison.update(
-        {
-            'split_seed': split_seed,
-            'split_70_path': normalize_project_path(split_70_path),
-            'split_30_path': normalize_project_path(split_30_path),
-            'saved_overlap_columns': saved_overlap,
-            'recomputed_overlap_columns': recomputed_overlap,
-        }
-    )
-    return comparison
-
 
 def load_split_dataframes(
     dataset_dir: str,
@@ -354,58 +311,58 @@ def build_model_registry() -> Dict[str, Dict]:
             'factory': _build_tcn_wrapper,
             'needs_fit': False,
             'source': 'local_pretrained',
-            'artifact': project_path('modelos', 'tcn_0.keras'),
+            'artifact': project_path('nueva_info', 'tcn.keras'),
         },
         'nbeats': {
             'label': 'NBEATS',
             'factory': _build_nbeats_wrapper,
             'needs_fit': False,
             'source': 'local_pretrained',
-            'artifact': project_path('modelos', 'nbeats_0.keras'),
+            'artifact': project_path('nueva_info', 'nbeats.keras'),
         },
         'lstm': {
             'label': 'LSTM',
             'factory': lambda: KerasPretrainedWrapper(
-                project_path('modelos', 'lstm_2.keras'),
+                project_path('nueva_info', 'lstm.keras'),
                 batch_size=32,
                 name='LSTM',
             ).load(),
             'needs_fit': False,
             'source': 'local_pretrained',
-            'artifact': project_path('modelos', 'lstm_2.keras'),
+            'artifact': project_path('nueva_info', 'lstm.keras'),
         },
         'tide': {
             'label': 'TiDE',
             'factory': lambda: KerasPretrainedWrapper(
-                project_path('modelos', 'tide_0.keras'),
+                project_path('nueva_info', 'tide.keras'),
                 batch_size=32,
                 name='TiDE',
             ).load(),
             'needs_fit': False,
             'source': 'local_pretrained',
-            'artifact': project_path('modelos', 'tide_0.keras'),
+            'artifact': project_path('nueva_info', 'tide.keras'),
         },
         'encdec': {
             'label': 'Encoder-Decoder LSTM',
             'factory': lambda: KerasPretrainedWrapper(
-                project_path('modelos', 'encDec_2.keras'),
+                project_path('nueva_info', 'encDec.keras'),
                 batch_size=32,
                 name='Encoder-Decoder LSTM',
             ).load(),
             'needs_fit': False,
             'source': 'local_pretrained',
-            'artifact': project_path('modelos', 'encDec_2.keras'),
+            'artifact': project_path('nueva_info', 'encDec.keras'),
         },
         'itrans': {
             'label': 'i-Transformer',
             'factory': lambda: KerasPretrainedWrapper(
-                project_path('modelos', 'itrans_2.keras'),
+                project_path('nueva_info', 'itrans.keras'),
                 batch_size=32,
                 name='i-Transformer',
             ).load(),
             'needs_fit': False,
             'source': 'local_pretrained',
-            'artifact': project_path('modelos', 'itrans_2.keras'),
+            'artifact': project_path('nueva_info', 'itrans.keras'),
         },
     }
 

@@ -1,5 +1,5 @@
 model:
-  pretrained_path: "modelos/tcn_0.keras"   # Path to pretrained model (null to train from scratch)
+  pretrained_path: "nueva_info/tcn.keras"   # Path to pretrained model (null to train from scratch)
 
 architecture:
   filters: 32

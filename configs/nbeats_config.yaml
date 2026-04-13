@@ -1,5 +1,5 @@
 model:
-  pretrained_path: "modelos/nbeats_0.keras"
+  pretrained_path: "nueva_info/nbeats.keras"
 
 architecture:
   blocks: 2

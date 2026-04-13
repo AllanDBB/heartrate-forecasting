@@ -5,6 +5,12 @@ __pycache__/
 
 # Model prediction cache (Colab)
 cache/
+cache_tmp_count/
+cache_nueva_info/
+
+# Model artifacts (large, upload manually to Colab/Drive)
+*.keras
+nueva_info/resultados.docx
 
 # C extensions
 *.so
