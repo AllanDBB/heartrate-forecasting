@@ -405,10 +405,20 @@ class KerasPretrainedWrapper:
     def _load_model(self):
         tf = _ensure_tensorflow()
         custom_objects = _build_custom_objects()
-        registered_name = _canonical_registered_name(self.metadata)
 
-        if registered_name not in {'Custom>TiDEModel', 'Custom>iTransformer'}:
-            custom_objects = None
+        # Register NBeatsBlock (from NBeatsSupervisedWrapper)
+        try:
+            from wrappers.NBeatsSupervisedWrapper import _get_nbeats_block_class
+            custom_objects['NBeatsBlock'] = _get_nbeats_block_class()
+        except Exception:
+            pass
+
+        # Register TCN layer (from keras-tcn)
+        try:
+            from tcn import TCN
+            custom_objects['TCN'] = TCN
+        except ImportError:
+            pass
 
         self.model = tf.keras.models.load_model(
             self.model_path,
