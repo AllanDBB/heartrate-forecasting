@@ -387,21 +387,15 @@ def _build_custom_objects():
 
 def _manual_load_custom_model(model_path, metadata, custom_objects):
     """
-    Fallback loader for TiDE / iTransformer when ``load_model`` fails due to
-    weight-path mismatches across Keras versions.
+    Explicit weight loader for TiDE and iTransformer.
 
-    Strategy:
-      1. Read weight shapes from the embedded ``model.weights.h5`` to infer
-         the true architecture hyper-parameters (e.g. ``d_model``).
-      2. Build the model with those parameters.
-      3. Assign weights by shape-group matching: within each unique shape,
-         ``h5`` arrays (sorted by path) are zipped with model variables
-         (sorted by ``var.path``).
+    Uses direct h5-path-to-layer attribute mapping instead of shape-based
+    heuristics, which are unreliable when multiple variables share the same
+    shape and the Keras variable-path ordering differs from the h5 ordering.
     """
     import h5py
     import tempfile
     import zipfile
-    from collections import defaultdict
 
     tf = _ensure_tensorflow()
 
@@ -413,16 +407,20 @@ def _manual_load_custom_model(model_path, metadata, custom_objects):
         fh.write(h5_data)
 
     try:
-        # ---- collect non-optimizer weight arrays ----
-        h5_vars = []
+        # ---- read all arrays into memory once ----
+        h5_data_dict = {}
         with h5py.File(h5_tmp, 'r') as hf:
             def _collect(name, obj):
                 if isinstance(obj, h5py.Dataset) and 'optimizer' not in name:
-                    h5_vars.append((name, np.array(obj)))
+                    h5_data_dict[name] = np.array(obj)
             hf.visititems(_collect)
-        h5_vars.sort()
 
-        # ---- resolve constructor kwargs ----
+        h5_paths = list(h5_data_dict.keys())
+
+        def arr(path):
+            return h5_data_dict[path]
+
+        # ---- resolve constructor kwargs from config ----
         registered = _canonical_registered_name(metadata)
         cfg = {
             k: v
@@ -430,54 +428,110 @@ def _manual_load_custom_model(model_path, metadata, custom_objects):
             if k not in ('name', 'trainable', 'dtype') and not isinstance(v, dict)
         }
 
-        # iTransformer: config may record wrong d_model — infer from weights
+        # ---- iTransformer: infer architecture from h5 ----
         if registered == 'Custom>iTransformer':
-            for path, arr in h5_vars:
-                if path.startswith('input_proj/') and arr.ndim == 2:
-                    cfg['d_model'] = int(arr.shape[-1])
-                    break
-            for path, arr in h5_vars:
-                if '/ffn/' in path and 'dense/vars/0' in path and arr.ndim == 2:
-                    cfg['d_ff'] = int(arr.shape[-1])
-                    break
-            block_names = {
-                p.split('/')[1] for p, _ in h5_vars if p.startswith('blocks/')
-            }
-            if block_names:
-                cfg['num_layers'] = len(block_names)
+            block_names_h5 = sorted({
+                p.split('/')[1] for p in h5_paths if p.startswith('blocks/')
+            })
+            cfg['num_layers'] = len(block_names_h5)
+            # Infer d_model from input_proj kernel (shape: [feature_dim, d_model])
+            cfg['d_model'] = int(arr('input_proj/vars/0').shape[-1])
+            # Infer d_ff from first block's ffn dense kernel (shape: [d_model, d_ff])
+            cfg['d_ff'] = int(arr(f'blocks/{block_names_h5[0]}/ffn/layers/dense/vars/0').shape[-1])
 
-        # ---- build model ----
-        cls_map = {
-            'Custom>TiDEModel': ('TiDEModel', lambda c: [None, c.get('input_length', 200), 1]),
-            'Custom>iTransformer': ('iTransformer', lambda c: [None, c.get('seq_len', 200), 1]),
-        }
-        if registered not in cls_map:
-            raise ValueError(f"No manual loader for registered_name={registered}")
+            model = custom_objects['iTransformer'](**cfg)
+            model.build(tf.TensorShape([None, cfg.get('seq_len', 200), 1]))
 
-        cls_name, shape_fn = cls_map[registered]
-        model = custom_objects[cls_name](**cfg)
-        model.build(tf.TensorShape(shape_fn(cfg)))
+            # input_proj
+            model.input_proj.kernel.assign(arr('input_proj/vars/0'))
+            model.input_proj.bias.assign(arr('input_proj/vars/1'))
 
-        # ---- assign weights by shape-group matching ----
-        h5_by_shape = defaultdict(list)
-        for _, arr in h5_vars:
-            h5_by_shape[arr.shape].append(arr)
+            # head
+            model.head.kernel.assign(arr('head/vars/0'))
+            model.head.bias.assign(arr('head/vars/1'))
 
-        model_vars_sorted = sorted(model.variables, key=lambda v: v.path)
-        model_by_shape = defaultdict(list)
-        for v in model_vars_sorted:
-            model_by_shape[tuple(v.shape)].append(v)
+            # blocks
+            assigned = 4
+            for i, bn in enumerate(block_names_h5):
+                block = model.blocks[i]
+                p = f'blocks/{bn}'
 
-        assigned = 0
-        for shape, h5_list in h5_by_shape.items():
-            m_list = model_by_shape.get(shape, [])
-            for arr, var in zip(h5_list, m_list):
-                var.assign(arr)
-                assigned += 1
+                # MultiHeadAttention internal dense layers
+                attn = block.attention
+                attn._query_dense.kernel.assign(arr(f'{p}/attn/query_dense/vars/0'))
+                attn._query_dense.bias.assign(arr(f'{p}/attn/query_dense/vars/1'))
+                attn._key_dense.kernel.assign(arr(f'{p}/attn/key_dense/vars/0'))
+                attn._key_dense.bias.assign(arr(f'{p}/attn/key_dense/vars/1'))
+                attn._value_dense.kernel.assign(arr(f'{p}/attn/value_dense/vars/0'))
+                attn._value_dense.bias.assign(arr(f'{p}/attn/value_dense/vars/1'))
+                attn._output_dense.kernel.assign(arr(f'{p}/attn/output_dense/vars/0'))
+                attn._output_dense.bias.assign(arr(f'{p}/attn/output_dense/vars/1'))
 
-        print(
-            f"  Fallback weight loading: {assigned}/{len(h5_vars)} weights assigned"
-        )
+                # FFN (stored as sequential dense layers in h5)
+                block.ffn_dense1.kernel.assign(arr(f'{p}/ffn/layers/dense/vars/0'))
+                block.ffn_dense1.bias.assign(arr(f'{p}/ffn/layers/dense/vars/1'))
+                block.ffn_dense2.kernel.assign(arr(f'{p}/ffn/layers/dense_1/vars/0'))
+                block.ffn_dense2.bias.assign(arr(f'{p}/ffn/layers/dense_1/vars/1'))
+
+                # LayerNorms
+                block.norm1.gamma.assign(arr(f'{p}/norm1/vars/0'))
+                block.norm1.beta.assign(arr(f'{p}/norm1/vars/1'))
+                block.norm2.gamma.assign(arr(f'{p}/norm2/vars/0'))
+                block.norm2.beta.assign(arr(f'{p}/norm2/vars/1'))
+                assigned += 16
+
+            print(f"  iTransformer explicit weight loading: {assigned}/{len(h5_data_dict)} assigned")
+
+        # ---- TiDE: explicit path assignment ----
+        elif registered == 'Custom>TiDEModel':
+            model = custom_objects['TiDEModel'](**cfg)
+            model.build(tf.TensorShape([None, cfg.get('input_length', 200), 1]))
+
+            # input_projection
+            model.input_projection.kernel.assign(arr('input_projection/vars/0'))
+            model.input_projection.bias.assign(arr('input_projection/vars/1'))
+
+            # encoder_blocks
+            enc_names = sorted({p.split('/')[1] for p in h5_paths if p.startswith('encoder_blocks/')})
+            for i, bn in enumerate(enc_names):
+                block = model.encoder_blocks[i]
+                p = f'encoder_blocks/{bn}'
+                block.dense1.kernel.assign(arr(f'{p}/dense1/vars/0'))
+                block.dense1.bias.assign(arr(f'{p}/dense1/vars/1'))
+                block.dense2.kernel.assign(arr(f'{p}/dense2/vars/0'))
+                block.dense2.bias.assign(arr(f'{p}/dense2/vars/1'))
+                block.layer_norm.gamma.assign(arr(f'{p}/layer_norm/vars/0'))
+                block.layer_norm.beta.assign(arr(f'{p}/layer_norm/vars/1'))
+
+            # decoder_blocks
+            dec_names = sorted({p.split('/')[1] for p in h5_paths if p.startswith('decoder_blocks/')})
+            for i, bn in enumerate(dec_names):
+                block = model.decoder_blocks[i]
+                p = f'decoder_blocks/{bn}'
+                block.dense1.kernel.assign(arr(f'{p}/dense1/vars/0'))
+                block.dense1.bias.assign(arr(f'{p}/dense1/vars/1'))
+                block.dense2.kernel.assign(arr(f'{p}/dense2/vars/0'))
+                block.dense2.bias.assign(arr(f'{p}/dense2/vars/1'))
+                block.layer_norm.gamma.assign(arr(f'{p}/layer_norm/vars/0'))
+                block.layer_norm.beta.assign(arr(f'{p}/layer_norm/vars/1'))
+
+            # temporal_projection (stored as layers/dense_1 in h5)
+            model.temporal_projection.kernel.assign(arr('layers/dense_1/vars/0'))
+            model.temporal_projection.bias.assign(arr('layers/dense_1/vars/1'))
+
+            # temporal_decoder (stored as layers/sequential/layers/dense in h5)
+            model.temporal_decoder.kernel.assign(arr('layers/sequential/layers/dense/vars/0'))
+            model.temporal_decoder.bias.assign(arr('layers/sequential/layers/dense/vars/1'))
+
+            # output_projection (stored as layers/sequential/layers/dense_1 in h5)
+            model.output_projection.kernel.assign(arr('layers/sequential/layers/dense_1/vars/0'))
+            model.output_projection.bias.assign(arr('layers/sequential/layers/dense_1/vars/1'))
+
+            assigned = 2 + len(enc_names) * 6 + len(dec_names) * 6 + 2 + 2 + 2
+            print(f"  TiDE explicit weight loading: {assigned}/{len(h5_data_dict)} assigned")
+
+        else:
+            raise ValueError(f"No explicit loader for registered_name={registered}")
 
     finally:
         os.unlink(h5_tmp)
@@ -522,6 +576,16 @@ class KerasPretrainedWrapper:
 
         registered_name = _canonical_registered_name(self.metadata)
 
+        # Always use the explicit loader for TiDE and iTransformer.
+        # keras.models.load_model succeeds silently for these models but assigns
+        # weights to wrong variables (Keras variable-path naming changed between
+        # versions). The explicit loader maps h5 paths to layer attributes directly.
+        if registered_name in ('Custom>TiDEModel', 'Custom>iTransformer'):
+            self.model = _manual_load_custom_model(
+                self.model_path, self.metadata, custom_objects,
+            )
+            return self.model
+
         try:
             self.model = tf.keras.models.load_model(
                 self.model_path,
@@ -530,12 +594,7 @@ class KerasPretrainedWrapper:
                 safe_mode=False,
             )
         except Exception:
-            # Fallback for cross-version weight-path mismatches (TiDE, iTransformer)
-            if registered_name not in ('Custom>TiDEModel', 'Custom>iTransformer'):
-                raise
-            self.model = _manual_load_custom_model(
-                self.model_path, self.metadata, custom_objects,
-            )
+            raise
 
         return self.model
 
