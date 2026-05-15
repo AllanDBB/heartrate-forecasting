@@ -376,13 +376,155 @@ def _build_custom_objects():
             })
             return config
 
-    return {
+    # ---- NBeats (interpretable, Custom>NBeatsModel) ----
+    class NBeatsBlockLayer(tf.keras.layers.Layer):
+        """Inner block for NBeatsModel — built explicitly, not serialised separately."""
+
+        def __init__(self, input_size, units, n_layers, theta_dim, activation='relu', **kwargs):
+            super().__init__(**kwargs)
+            self.input_size_val = input_size
+            self.units_val = units
+            self.n_layers_val = n_layers
+            self.theta_dim_val = theta_dim
+            self.activation_val = activation
+            self.fc_layers = tf.keras.Sequential([
+                tf.keras.layers.Dense(units, activation=activation)
+                for _ in range(n_layers)
+            ])
+            self.theta_layer = tf.keras.layers.Dense(theta_dim)
+
+        def build(self, input_shape):
+            self.fc_layers.build(tf.TensorShape(input_shape))
+            self.theta_layer.build(tf.TensorShape([input_shape[0], self.units_val]))
+            super().build(input_shape)
+
+        def call(self, inputs, training=None):
+            x = self.fc_layers(inputs, training=training)
+            return self.theta_layer(x)
+
+        def get_config(self):
+            cfg = super().get_config()
+            cfg.update(input_size=self.input_size_val, units=self.units_val,
+                       n_layers=self.n_layers_val, theta_dim=self.theta_dim_val,
+                       activation=self.activation_val)
+            return cfg
+
+    @tf.keras.utils.register_keras_serializable(package='Custom', name='NBeatsModel')
+    class NBeatsModel(tf.keras.Model):
+        """
+        N-BEATS interpretable model (trend + seasonality stacks).
+        Block 0: trend (polynomial basis, theta_dim = 2*theta_trend).
+        Block 1: seasonality (Fourier basis, theta_dim = 4*theta_season).
+        """
+
+        def __init__(self, input_size, output_size, n_blocks=2, n_layers=4, units=256,
+                     theta_trend=8, theta_season=12, activation='relu', **kwargs):
+            super().__init__(**kwargs)
+            self.input_size = input_size
+            self.output_size = output_size
+            self.n_blocks = n_blocks
+            self.n_layers = n_layers
+            self.units = units
+            self.theta_trend = theta_trend
+            self.theta_season = theta_season
+            self.activation = activation
+
+            theta_dims = []
+            for i in range(n_blocks):
+                theta_dims.append(2 * theta_trend if i % 2 == 0 else 4 * theta_season)
+
+            self.blocks = [
+                NBeatsBlockLayer(
+                    input_size=input_size, units=units, n_layers=n_layers,
+                    theta_dim=td, activation=activation,
+                )
+                for td in theta_dims
+            ]
+
+        def build(self, input_shape):
+            flat_shape = tf.TensorShape([None, self.input_size])
+            for block in self.blocks:
+                block.build(flat_shape)
+            super().build(input_shape)
+
+        def build_from_config(self, config):
+            input_shape = config.get('input_shape')
+            if input_shape is not None:
+                self.build(input_shape)
+
+        def _trend_basis(self, theta, size):
+            p = self.theta_trend
+            t = tf.cast(tf.linspace(0.0, 1.0, size), dtype=theta.dtype)
+            T = tf.stack([t ** k for k in range(p)], axis=1)   # [size, p]
+            return tf.linalg.matmul(theta, T, transpose_b=True)  # [batch, size]
+
+        def _season_basis(self, theta, size):
+            H = self.theta_season
+            pi = tf.constant(3.141592653589793, dtype=theta.dtype)
+            t = tf.cast(tf.range(size), dtype=theta.dtype) / tf.cast(size, dtype=theta.dtype)
+            cos_terms = tf.stack(
+                [tf.cos(2.0 * pi * tf.cast(n, theta.dtype) * t) for n in range(H)], axis=1
+            )  # [size, H]
+            sin_terms = tf.stack(
+                [tf.sin(2.0 * pi * tf.cast(n, theta.dtype) * t) for n in range(H)], axis=1
+            )  # [size, H]
+            S = tf.concat([cos_terms, sin_terms], axis=1)        # [size, 2H]
+            return tf.linalg.matmul(theta, S, transpose_b=True)  # [batch, size]
+
+        def call(self, inputs, training=None):
+            x = tf.cast(inputs, tf.float32)
+            if x.shape.rank != 2:
+                x = tf.reshape(x, [tf.shape(x)[0], self.input_size])
+
+            residual = x
+            forecast = tf.zeros([tf.shape(x)[0], self.output_size], dtype=x.dtype)
+
+            for i, block in enumerate(self.blocks):
+                theta = block(residual, training=training)
+                if i % 2 == 0:  # trend block
+                    theta_b = theta[:, :self.theta_trend]
+                    theta_f = theta[:, self.theta_trend:]
+                    backcast = self._trend_basis(theta_b, self.input_size)
+                    fcast    = self._trend_basis(theta_f, self.output_size)
+                else:           # seasonality block
+                    theta_b = theta[:, :2 * self.theta_season]
+                    theta_f = theta[:, 2 * self.theta_season:]
+                    backcast = self._season_basis(theta_b, self.input_size)
+                    fcast    = self._season_basis(theta_f, self.output_size)
+
+                residual = residual - backcast
+                forecast = forecast + fcast
+
+            return forecast
+
+        def get_config(self):
+            cfg = super().get_config()
+            cfg.update(
+                input_size=self.input_size, output_size=self.output_size,
+                n_blocks=self.n_blocks, n_layers=self.n_layers, units=self.units,
+                theta_trend=self.theta_trend, theta_season=self.theta_season,
+                activation=self.activation,
+            )
+            return cfg
+
+    # Also register NBeatsBlock (used by the Functional nbeats.keras from nueva_info/)
+    try:
+        from wrappers.NBeatsSupervisedWrapper import _get_nbeats_block_class
+        NBeatsBlock = _get_nbeats_block_class()
+    except Exception:
+        NBeatsBlock = None
+
+    objs = {
         'TiDEResidualBlock': TiDEResidualBlock,
         'TiDEModel': TiDEModel,
         'InvertibleNorm': InvertibleNorm,
         'iTransformerBlock': ITransformerBlock,
         'iTransformer': iTransformer,
+        'NBeatsModel': NBeatsModel,
     }
+    if NBeatsBlock is not None:
+        objs['NBeatsBlock'] = NBeatsBlock
+    return objs
 
 
 def _manual_load_custom_model(model_path, metadata, custom_objects):
@@ -530,6 +672,29 @@ def _manual_load_custom_model(model_path, metadata, custom_objects):
             assigned = 2 + len(enc_names) * 6 + len(dec_names) * 6 + 2 + 2 + 2
             print(f"  TiDE explicit weight loading: {assigned}/{len(h5_data_dict)} assigned")
 
+        # ---- NBeatsModel: explicit path assignment ----
+        elif registered == 'Custom>NBeatsModel':
+            model = custom_objects['NBeatsModel'](**cfg)
+            model.build(tf.TensorShape([None, cfg['input_size']]))
+
+            block_names_h5 = sorted({
+                p.split('/')[1] for p in h5_paths if p.startswith('blocks/')
+            })
+            assigned = 0
+            for i, bn in enumerate(block_names_h5):
+                block = model.blocks[i]
+                p = f'blocks/{bn}'
+                for j, layer in enumerate(block.fc_layers.layers):
+                    suffix = '' if j == 0 else f'_{j}'
+                    layer.kernel.assign(arr(f'{p}/fc_layers/dense{suffix}/vars/0'))
+                    layer.bias.assign(arr(f'{p}/fc_layers/dense{suffix}/vars/1'))
+                    assigned += 2
+                block.theta_layer.kernel.assign(arr(f'{p}/theta_layer/vars/0'))
+                block.theta_layer.bias.assign(arr(f'{p}/theta_layer/vars/1'))
+                assigned += 2
+
+            print(f"  NBeatsModel explicit weight loading: {assigned}/{len(h5_data_dict)} assigned")
+
         else:
             raise ValueError(f"No explicit loader for registered_name={registered}")
 
@@ -580,7 +745,7 @@ class KerasPretrainedWrapper:
         # keras.models.load_model succeeds silently for these models but assigns
         # weights to wrong variables (Keras variable-path naming changed between
         # versions). The explicit loader maps h5 paths to layer attributes directly.
-        if registered_name in ('Custom>TiDEModel', 'Custom>iTransformer'):
+        if registered_name in ('Custom>TiDEModel', 'Custom>iTransformer', 'Custom>NBeatsModel'):
             self.model = _manual_load_custom_model(
                 self.model_path, self.metadata, custom_objects,
             )

@@ -7,6 +7,8 @@ __pycache__/
 cache/
 cache_tmp_count/
 cache_nueva_info/
+cache_modelos_45/
+cache_ais/
 
 # Model artifacts (large, upload manually to Colab/Drive)
 *.keras

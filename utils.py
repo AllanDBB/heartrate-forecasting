@@ -14,7 +14,7 @@ from sklearn.preprocessing import MinMaxScaler
 # EVALUATION METRICS: DTW, Pearson, MAPE
 # ============================================================================
 
-SUPPORTED_EVAL_METRICS = ("MAPE", "DTW", "Pearson")
+SUPPORTED_EVAL_METRICS = ("MAPE", "MAPE_median", "DTW", "Pearson", "Pearson_median")
 DEFAULT_DTW_WINDOW = 20
 
 
@@ -28,9 +28,11 @@ def normalize_metric_name(metric_name: str) -> str:
     normalized = metric_name.strip().upper()
     aliases = {
         "MAPE": "MAPE",
+        "MAPE_MEDIAN": "MAPE_median",
         "DWT": "DTW",
         "DTW": "DTW",
         "PEARSON": "Pearson",
+        "PEARSON_MEDIAN": "Pearson_median",
         "PEARSON CORRELATION": "Pearson",
         "CORRELATION": "Pearson",
         "CORRELACION": "Pearson",
@@ -182,10 +184,11 @@ def evaluate_all_metrics(y_true, y_pred, dtw_window=DEFAULT_DTW_WINDOW):
     windows generated upstream.
 
     Metrics:
-      - MAPE: mean window-level MAPE across all evaluation windows
-      - DTW: mean DTW distance across all evaluation windows
-      - Pearson: mean Pearson correlation across all evaluation windows
-
+      - MAPE        : mean window-level MAPE across all evaluation windows
+      - MAPE_median : median window-level MAPE across all evaluation windows
+      - DTW         : mean DTW distance across all evaluation windows
+      - Pearson     : mean Pearson correlation across all evaluation windows
+      - Pearson_median : median Pearson correlation across all evaluation windows
 
     Returns:
         dict with metric names -> rounded values
@@ -197,9 +200,11 @@ def evaluate_all_metrics(y_true, y_pred, dtw_window=DEFAULT_DTW_WINDOW):
     corr_vals = compute_correlations_for_all_windows(y_true, y_pred)
 
     metrics = {
-        "MAPE": round(float(np.mean(mape_vals)), 4),
-        "DTW": round(float(np.mean(dtw_vals)), 4),
-        "Pearson": round(float(np.mean(corr_vals)), 4),
+        "MAPE":           round(float(np.mean(mape_vals)),   4),
+        "MAPE_median":    round(float(np.median(mape_vals)), 4),
+        "DTW":            round(float(np.mean(dtw_vals)),    4),
+        "Pearson":        round(float(np.mean(corr_vals)),   4),
+        "Pearson_median": round(float(np.median(corr_vals)), 4),
     }
 
     print("=" * 50)
@@ -281,6 +286,7 @@ def plot_error_over_horizon(y_true, y_pred, title="Error según horizonte de pre
 def plot_metrics_comparison(results_dict, title="Comparación de Modelos"):
     """
     Bar chart comparing multiple models across all metrics.
+    Models are sorted best → worst by MAPE (ascending).
 
     Args:
         results_dict: dict of {"Model Name": metrics_dict, ...}
@@ -294,41 +300,58 @@ def plot_metrics_comparison(results_dict, title="Comparación de Modelos"):
         model_name: normalize_metrics_dict(metrics_dict)
         for model_name, metrics_dict in results_dict.items()
     }
-    model_names = list(results_dict.keys())
+
+    # Sort models best → worst by MAPE (lower = better)
+    model_names = sorted(
+        results_dict.keys(),
+        key=lambda m: results_dict[m].get('MAPE', float('inf'))
+    )
+
     metric_names = list(list(results_dict.values())[0].keys())
 
-    # Separate correlation (higher is better) from the rest (lower is better)
-    higher_better_names = {"Pearson"}
-    lower_better = [m for m in metric_names if m not in higher_better_names]
+    # Separate by direction: higher_better includes Pearson variants; rest are lower_better
+    higher_better_names = {"Pearson", "Pearson_median"}
+    lower_better  = [m for m in metric_names if m not in higher_better_names]
     higher_better = [m for m in metric_names if m in higher_better_names]
 
     fig, axes = plt.subplots(1, 2 if higher_better else 1,
-                             figsize=(7 * (2 if higher_better else 1), 6))
+                             figsize=(max(8, len(model_names) * 1.2) * (2 if higher_better else 1), 6))
     if not isinstance(axes, np.ndarray):
         axes = [axes]
 
-    # Plot 1: metrics where lower is better
+    # Plot 1: metrics where lower is better (MAPE, MAPE_median, DTW)
     x = np.arange(len(model_names))
-    width = 0.8 / len(lower_better)
+    width = 0.8 / max(len(lower_better), 1)
     for i, metric in enumerate(lower_better):
         vals = [results_dict[m].get(metric, 0) for m in model_names]
-        axes[0].bar(x + i * width, vals, width, label=metric, alpha=0.85)
+        bars = axes[0].bar(x + i * width, vals, width, label=metric, alpha=0.85)
+        # highlight best bar
+        best_idx = int(np.argmin(vals))
+        bars[best_idx].set_edgecolor('black')
+        bars[best_idx].set_linewidth(1.5)
     axes[0].set_xticks(x + width * len(lower_better) / 2)
-    axes[0].set_xticklabels(model_names, rotation=15, ha='right')
+    axes[0].set_xticklabels(model_names, rotation=20, ha='right', fontsize=9)
     axes[0].set_title('Métricas de Error (↓ menor = mejor)', fontsize=12, fontweight='bold')
-    axes[0].legend()
+    axes[0].legend(fontsize=8)
     axes[0].grid(True, alpha=0.3, axis='y')
 
-    # Plot 2: metrics where higher is better
+    # Plot 2: metrics where higher is better (Pearson, Pearson_median)
     if higher_better:
-        for metric in higher_better:
+        x2 = np.arange(len(model_names))
+        width2 = 0.8 / max(len(higher_better), 1)
+        for i, metric in enumerate(higher_better):
             vals = [results_dict[m].get(metric, 0) for m in model_names]
-            colors = ['#2ecc71' if v == max(vals) else '#95a5a6' for v in vals]
-            axes[1].bar(model_names, vals, color=colors, alpha=0.85)
+            bars = axes[1].bar(x2 + i * width2, vals, width2, label=metric, alpha=0.85)
+            best_idx = int(np.argmax(vals))
+            bars[best_idx].set_edgecolor('black')
+            bars[best_idx].set_linewidth(1.5)
             for j, v in enumerate(vals):
-                axes[1].text(j, v + 0.01, f'{v:.3f}', ha='center', fontsize=10)
+                axes[1].text(x2[j] + i * width2, v + 0.01, f'{v:.2f}', ha='center', fontsize=7)
+        axes[1].set_xticks(x2 + width2 * len(higher_better) / 2)
+        axes[1].set_xticklabels(model_names, rotation=20, ha='right', fontsize=9)
         axes[1].set_title('Pearson (↑ mayor = mejor)', fontsize=12, fontweight='bold')
-        axes[1].set_ylim(-1.0, 1.1)
+        axes[1].set_ylim(0.0, 1.15)
+        axes[1].legend(fontsize=8)
         axes[1].grid(True, alpha=0.3, axis='y')
 
     fig.suptitle(title, fontsize=14, fontweight='bold')
