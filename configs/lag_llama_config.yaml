@@ -1,0 +1,16 @@
+model:
+  name: "time-series-foundation-models/Lag-Llama"
+  device: "cuda"                 # "cpu" o "cuda"
+  num_samples: 20                # muestras para predicción probabilística (100 para resultados finales)
+  context_length: 200            # igual a input_size para usar toda la ventana
+  freq: "h"                      # frecuencia GluonTS (h=hora, min=minuto, etc.)
+
+forecasting:
+  input_size: 200
+  output_size: 200
+  batch_size: 32                 # batch más pequeño por overhead del muestreo probabilístico
+
+training:
+  epochs: 20
+  lr: 5.0e-4
+  adapter_hidden: 512

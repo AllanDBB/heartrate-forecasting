@@ -1,0 +1,896 @@
+\documentclass[11pt,a4paper]{article}
+
+% ── Encoding & language ──────────────────────────────────────────────────────
+\usepackage[utf8]{inputenc}
+\usepackage[T1]{fontenc}
+\usepackage[english]{babel}
+
+% ── Layout ───────────────────────────────────────────────────────────────────
+\usepackage[margin=2.5cm]{geometry}
+\usepackage{setspace}
+\onehalfspacing
+
+% ── Math ─────────────────────────────────────────────────────────────────────
+\usepackage{amsmath, amssymb, bm}
+
+% ── Tables ───────────────────────────────────────────────────────────────────
+\usepackage{booktabs}
+\usepackage{multirow}
+\usepackage{array}
+\usepackage{tabularx}
+
+% ── Figures ──────────────────────────────────────────────────────────────────
+\usepackage{graphicx}
+\usepackage{float}
+
+% ── Colours & hyperlinks ─────────────────────────────────────────────────────
+\usepackage[dvipsnames]{xcolor}
+\usepackage[colorlinks=true, linkcolor=NavyBlue, citecolor=NavyBlue,
+            urlcolor=NavyBlue]{hyperref}
+
+% ── Code listings ─────────────────────────────────────────────────────────────
+\usepackage{listings}
+
+% ── Misc ─────────────────────────────────────────────────────────────────────
+\usepackage{microtype}
+\usepackage{parskip}
+\usepackage{caption}
+\usepackage{subcaption}
+\usepackage{enumitem}
+\usepackage{algorithm}
+\usepackage{algpseudocode}
+
+% ── Bibliography ─────────────────────────────────────────────────────────────
+\usepackage[numbers, sort&compress]{natbib}
+
+% ── Custom commands ───────────────────────────────────────────────────────────
+\newcommand{\TBD}{\textcolor{red}{\textbf{[TBD]}}}
+\newcommand{\ie}{\textit{i.e.}}
+\newcommand{\eg}{\textit{e.g.}}
+\newcommand{\etal}{\textit{et al.}}
+
+% ─────────────────────────────────────────────────────────────────────────────
+\begin{document}
+
+% ── Title block ──────────────────────────────────────────────────────────────
+\begin{titlepage}
+  \centering
+  \vspace*{2cm}
+
+  {\LARGE\bfseries Adaptive Ensemble Learning for Heart Rate Forecasting:\\
+  Combining Deep Learning and Foundation Models\\
+  with an Artificial Immune System\par}
+
+  \vspace{2cm}
+
+  {\large [Author Names]\par}
+  \vspace{0.4cm}
+  {\normalsize [Institution / Department]\par}
+  \vspace{0.3cm}
+  {\normalsize \href{mailto:adbyb.es@gmail.com}{adbyb.es@gmail.com}\par}
+
+  \vfill
+
+  {\normalsize May 2026\par}
+  \vspace{0.5cm}
+  {\small \textcolor{red}{DRAFT — Results marked \TBD\ pending notebook re-execution.}\par}
+\end{titlepage}
+
+% ── Abstract ─────────────────────────────────────────────────────────────────
+\begin{abstract}
+Accurate heart rate (HR) forecasting during physical activity is critical for
+real-time sports performance monitoring, personalised training control, and
+health risk detection.  In this work we propose a comprehensive multi-model
+ensemble framework for heart rate time series forecasting.  We evaluate six
+locally trained deep learning architectures—Temporal Convolutional Networks
+(TCN), Neural Basis Expansion Analysis for Time Series (N-BEATS), Long
+Short-Term Memory (LSTM), Temporal Density Encoder (TiDE), Encoder-Decoder
+LSTM (EncDec), and the iTransformer—alongside two fine-tuned large-scale time
+series foundation models: MOMENT and Moirai.  We compare four ensemble
+strategies: simple averaging, optimisation-based weighted combination, Ridge
+regression stacking, and a novel adaptive ensemble based on Artificial Immune
+System (AIS) theory.  Experiments are conducted on a multi-subject,
+multi-session exercise dataset comprising 39 subjects across 10 structured
+training protocols.  Results demonstrate that ensemble methods consistently
+outperform individual models, with stacking and optimised-weight approaches
+achieving MAPE reductions of up to 11.9\% over the simple-average baseline.
+The proposed AIS-Ensemble introduces per-subject adaptation and
+out-of-distribution detection, providing a biologically inspired mechanism for
+context-sensitive combination of model predictions.
+
+\smallskip\noindent\textbf{Keywords:} heart rate forecasting, time series,
+deep learning, foundation models, ensemble learning, artificial immune system,
+sports analytics.
+\end{abstract}
+
+\newpage
+\tableofcontents
+\newpage
+
+% ─────────────────────────────────────────────────────────────────────────────
+\section{Introduction}
+\label{sec:intro}
+% ─────────────────────────────────────────────────────────────────────────────
+
+The ability to predict heart rate dynamics during exercise has significant
+implications in sports science, clinical cardiology, and wearable health
+technology.  Heart rate is a primary physiological signal for monitoring
+cardiovascular load, exercise intensity, and recovery status \cite{achten2003}.
+Unlike many time series, physiological signals exhibit strong inter-individual
+variability—two athletes performing identical workloads may exhibit
+dramatically different HR trajectories, making generalisable forecasting
+non-trivial.
+
+Classical approaches to HR prediction have relied on statistical models such as
+ARIMA and exponential smoothing \cite{box2015}, which struggle to capture the
+non-stationary and nonlinear dynamics inherent in exercise-induced HR
+responses.  The emergence of deep learning architectures—particularly recurrent
+and convolutional networks—has substantially improved forecasting accuracy on
+physiological time series \cite{nakamura2020}.  More recently, large-scale time
+series foundation models (\eg\ MOMENT \cite{goswami2024moment} and Moirai
+\cite{woo2024moirai}) have demonstrated strong zero-shot and fine-tuning
+performance across diverse domains, raising questions about whether they can
+match or surpass specialised local models in physiological forecasting contexts.
+
+A further avenue for improvement lies in ensemble methods.  In forecasting
+competitions and machine learning benchmarks, ensembles consistently outperform
+individual models \cite{makridakis2018m4}.  However, naive averaging may dilute
+the strengths of better-performing models, while more sophisticated
+approaches—such as stacking \cite{wolpert1992} or optimisation-based weight
+assignment—can improve accuracy at the cost of increased complexity and risk of
+overfitting.  A critical open question is how to combine models in a
+subject-adaptive manner: given the inter-individual variability in HR dynamics,
+an optimal combination strategy may differ substantially across subjects.
+
+This paper makes the following contributions:
+\begin{enumerate}[leftmargin=*, label=\textbf{\arabic*.}]
+  \item \textbf{Systematic comparison} of six deep learning architectures and two
+        foundation models for multi-step HR forecasting across two horizon
+        lengths (45 and 200 timesteps).
+  \item \textbf{Evaluation of four ensemble strategies}—simple averaging,
+        optimisation-based weighting, Ridge stacking, and a novel AIS-based
+        adaptive ensemble—under a rigorous anti-leakage experimental protocol.
+  \item \textbf{A biologically inspired adaptive ensemble} (AIS-Ensemble) that
+        extracts handcrafted physiological features from the input context window
+        and uses an artificial immune network (aiNet) to adaptively weight models
+        based on per-subject historical performance.
+  \item \textbf{Empirical insights} on the relative contributions of model
+        heterogeneity, context length, and personalisation to HR forecasting
+        quality.
+\end{enumerate}
+
+The remainder of this paper is organised as follows.
+Section~\ref{sec:related} reviews related work.
+Section~\ref{sec:data} describes the dataset and preprocessing.
+Section~\ref{sec:models} details each model and ensemble method.
+Section~\ref{sec:setup} presents the experimental setup.
+Section~\ref{sec:results} reports and discusses results.
+Section~\ref{sec:conclusion} concludes and outlines future directions.
+
+% ─────────────────────────────────────────────────────────────────────────────
+\section{Related Work}
+\label{sec:related}
+% ─────────────────────────────────────────────────────────────────────────────
+
+\subsection{Heart Rate Forecasting}
+
+Early approaches to HR prediction treated the problem as a classical time
+series regression task using ARIMA models \cite{box2015} or simple regression
+with physiological covariates (workload, cadence, oxygen uptake).  These
+methods offer interpretability but assume linear, stationary dynamics that are
+often violated during variable-intensity exercise.
+
+Deep learning approaches have significantly advanced HR forecasting accuracy.
+Convolutional architectures capture local temporal patterns efficiently, while
+recurrent networks (LSTM, GRU) model long-range dependencies inherent in
+physiological response curves.  Nakamura \etal\ \cite{nakamura2020} compared
+LSTM and CNN-based models for HR prediction during cycling, finding that LSTM
+outperformed simpler baselines when sequence lengths exceeded 60 seconds.  More
+recently, attention-based transformers have shown promise for capturing global
+dependencies in physiological signals \cite{liu2024itransformer}.
+
+\subsection{Foundation Models for Time Series}
+
+Large-scale pretrained models have transformed natural language processing and
+computer vision.  Analogous developments in time series analysis include
+MOMENT \cite{goswami2024moment} and Moirai \cite{woo2024moirai}.  These
+models are pretrained on massive corpora of diverse time series and can be
+applied zero-shot or with minimal fine-tuning to downstream tasks.
+
+MOMENT is a transformer-based model with 300M parameters designed for masked
+time series reconstruction and forecasting with a context length of 512
+timesteps \cite{goswami2024moment}.  Moirai is a unified forecasting model
+supporting multiple patch sizes and probabilistic output \cite{woo2024moirai}.
+Fine-tuning these models on domain-specific data has shown mixed results: gains
+are possible when the pretraining distribution is mismatched to the target
+domain, but local models trained end-to-end may retain competitive advantages
+in well-resourced scenarios.
+
+\subsection{Ensemble Methods for Forecasting}
+
+Ensemble learning for time series forecasting is well-established
+\cite{makridakis2018m4}.  Simple averaging of diverse models often outperforms
+individual members due to variance reduction.  Stacking \cite{wolpert1992}
+trains a meta-learner on out-of-fold validation predictions, enabling the
+meta-learner to discover complementary strengths among base models.
+Optimisation-based weight search directly minimises a loss metric over
+validation predictions.
+
+Adaptive or personalised ensemble methods—where the combination strategy
+changes as a function of the input context—are less explored in time series
+forecasting.  Related ideas appear in mixture-of-experts (MoE) architectures
+\cite{jacobs1991}, where a gating network selects expert sub-networks based on
+input features, and in algorithm selection \cite{rice1976}, where feature-based
+predictors choose the best forecasting method for a given time series.
+
+\subsection{Artificial Immune Systems in Machine Learning}
+
+Artificial Immune Systems (AIS) are computational paradigms inspired by the
+biological vertebrate immune system \cite{dasgupta1999}.  The aiNet algorithm
+\cite{decastro2000} is a network-based clustering approach that uses clonal
+selection and somatic hypermutation to build a compact network of memory cells
+(antibodies) representing the distribution of input data.  To our knowledge,
+the use of AIS for adaptive model combination in physiological time series
+forecasting has not been previously reported.
+
+% ─────────────────────────────────────────────────────────────────────────────
+\section{Dataset and Preprocessing}
+\label{sec:data}
+% ─────────────────────────────────────────────────────────────────────────────
+
+\subsection{Data Collection}
+
+The dataset consists of HR time series collected from \textbf{39 subjects}
+during structured exercise sessions across \textbf{10 protocols}
+(Session 01--10).  Protocols include functional threshold power (FTP) ramp
+tests, base conditioning (BC) exercises, and high-intensity interval training
+(HIIT).  Each time series comprises 1{,}841 timesteps recorded at a uniform
+sampling frequency, totalling 132 time series prior to the train/test split.
+HR values are expressed in beats per minute (bpm).
+
+\subsection{Preprocessing and Standardisation}
+
+Raw HR values are loaded and concatenated across sessions.  Each time series is
+independently standardised (zero mean, unit variance) using parameters
+estimated exclusively from the training partition, preventing information
+leakage from the test set.  Standardisation parameters (mean, standard
+deviation) are stored and subsequently used to restore predictions to the
+original bpm scale before metric computation.
+
+\subsection{Train/Test Split and Windowing}
+
+The dataset is split chronologically into a \textbf{70\% training partition}
+(91 subjects $\times$ 1{,}841 timesteps) and a \textbf{30\% evaluation
+partition} (39 subjects $\times$ 1{,}841 timesteps).  This split is fixed
+across all experiments.
+
+Forecasting instances are generated via a sliding window procedure:
+\begin{itemize}
+  \item \textbf{Input context}: the most recent $L_{\mathrm{in}}$ timesteps
+        ($L_{\mathrm{in}} \in \{45, 200\}$).
+  \item \textbf{Forecast horizon}: the subsequent $L_{\mathrm{out}}$ timesteps
+        ($L_{\mathrm{out}} = L_{\mathrm{in}}$).
+  \item \textbf{Stride}: 1 timestep.
+\end{itemize}
+
+This yields approximately 48{,}600 windows from the 30\% partition.  To enable
+unbiased evaluation of ensemble strategies without data leakage, the evaluation
+partition is further divided into:
+\begin{itemize}
+  \item \textbf{Ensemble-fit split} (\textit{ens\_fit}): 50\% of evaluation
+        windows (${\approx}24{,}301$ windows), used exclusively to fit ensemble
+        weights, the stacking meta-learner, and AIS memory matrices.
+  \item \textbf{Held-out split}: 50\% of evaluation windows
+        (${\approx}24{,}302$ windows), used exclusively for final performance
+        reporting.
+\end{itemize}
+
+All individual model predictions are precomputed and cached for both splits
+before any ensemble fitting occurs, ensuring that no ensemble method has access
+to held-out targets during training.
+
+% ─────────────────────────────────────────────────────────────────────────────
+\section{Models and Methods}
+\label{sec:models}
+% ─────────────────────────────────────────────────────────────────────────────
+
+\subsection{Individual Forecasting Models}
+
+All six local deep learning models follow the same sequence-to-sequence
+supervised forecasting paradigm: given an input window of $L_{\mathrm{in}}$
+standardised HR values, predict the next $L_{\mathrm{out}}$ HR values.  Models
+are trained exclusively on the 70\% training partition using inner 70/10/20
+splits for training, validation, and internal testing.
+
+\subsubsection{Temporal Convolutional Network (TCN)}
+TCNs use dilated causal convolutions with exponentially growing dilation
+factors $d \in \{1, 2, 4, 8\}$ and residual connections to capture temporal
+patterns at multiple scales \cite{bai2018}.  With kernel size 12 and 32
+filters per layer, the receptive field spans $L_{\mathrm{in}}$ timesteps.
+TCNs offer advantages over RNNs in training stability and parallelisability.
+
+\subsubsection{Neural Basis Expansion Analysis (N-BEATS)}
+N-BEATS \cite{oreshkin2020} uses stacked blocks of fully connected layers with
+learned basis expansions to decompose the time series into trend and
+seasonality components.  The architecture is interpretable by design, and
+residual connections between blocks provide multi-scale representation.
+
+\subsubsection{Long Short-Term Memory (LSTM)}
+A two-layer LSTM with gated recurrent units processes the input sequence
+recurrently.  The final hidden state is projected to the forecast horizon via a
+dense layer.  LSTM's gating mechanism makes it well-suited for sequences with
+long-range dependencies such as HR recovery curves.
+
+\subsubsection{Temporal Density Encoder (TiDE)}
+TiDE \cite{das2024tide} is an MLP-based architecture that encodes historical
+time series and future covariates into a compact dense representation, then
+decodes this representation into the forecast horizon.  Despite its simplicity,
+TiDE is competitive on standard benchmarks.
+
+\subsubsection{Encoder-Decoder LSTM (EncDec)}
+One LSTM encodes the input context into a fixed-dimensional state vector; a
+separate LSTM decoder autoregressively generates the forecast sequence.  This
+architecture explicitly models the encoding-generation duality useful for
+sequence-to-sequence tasks.
+
+\subsubsection{Inverted Transformer (iTransformer)}
+The iTransformer \cite{liu2024itransformer} inverts the traditional transformer
+attention mechanism to operate over the variate dimension rather than the
+temporal dimension, enabling better capture of cross-variable dependencies.  In
+our univariate forecasting setup, we apply iTransformer to each HR series
+independently.
+
+\subsection{Foundation Models}
+
+\subsubsection{MOMENT}
+MOMENT (\texttt{AutonLab/MOMENT-1-large}) is a transformer-based time series
+foundation model with approximately 300M parameters \cite{goswami2024moment}.
+We fine-tune MOMENT on the 70\% training partition with the following
+configuration: \texttt{context\_length}=512, \texttt{forecast\_horizon}=$L_{\mathrm{out}}$,
+5 epochs, learning rate $5\times10^{-4}$, AdamW optimiser.  Only the
+forecasting head is fine-tuned; the backbone is frozen.
+
+\subsubsection{Moirai}
+Moirai (\texttt{Salesforce/moirai-1.1-R-small}) is a unified probabilistic
+time series foundation model \cite{woo2024moirai}.  We fine-tune the small
+variant with \texttt{patch\_size}=32, frequency token \texttt{`h'}, and 20
+Monte Carlo samples for point estimation.  The median of the predictive
+distribution is used as the point forecast.
+
+\subsection{Ensemble Strategies}
+
+Given individual model predictions on the \textit{ens\_fit} and held-out
+splits, we evaluate four combination strategies.
+
+\subsubsection{Simple Average}
+The baseline ensemble assigns equal weights to all $N$ models:
+\begin{equation}
+  \hat{y}_{\mathrm{avg}}(t) = \frac{1}{N} \sum_{i=1}^{N} \hat{y}_{i}(t).
+\end{equation}
+This approach requires no training and serves as a variance-reduction baseline.
+
+\subsubsection{Optimisation-Based Weighted Average}
+We optimise a convex combination with non-negative weights summing to one:
+\begin{equation}
+  \hat{y}_{\mathrm{opt}}(t) = \sum_{i=1}^{N} w_i \hat{y}_{i}(t),
+  \qquad w_i \geq 0,\quad \sum_{i} w_i = 1.
+\end{equation}
+Weights $\mathbf{w}=(w_1,\ldots,w_N)$ are found via the Nelder-Mead simplex
+algorithm \cite{nelder1965} minimising MAPE on the \textit{ens\_fit} split.
+The weight vector is projected onto the probability simplex after each update.
+
+\subsubsection{Ridge Regression Stacking}
+Stacking trains a Ridge regression meta-learner on the concatenated base model
+predictions over the \textit{ens\_fit} split:
+\begin{equation}
+  \hat{y}_{\mathrm{stack}}(t)
+    = \mathbf{W}^{\!\top}
+      \begin{bmatrix} \hat{y}_1(t) \\ \vdots \\ \hat{y}_N(t) \end{bmatrix}
+    + \mathbf{b}.
+\end{equation}
+The input to the meta-learner is a vector of dimension $N \times L_{\mathrm{out}}$
+per window.  Ridge regularisation ($\alpha=1.0$) prevents overfitting.  Unlike
+static weights, stacking can learn horizon-dependent weights.
+
+\subsubsection{AIS-Adaptive Ensemble}
+\label{ssec:ais}
+
+The AIS-Ensemble is the novel contribution of this work.  It adapts the
+combination weights dynamically based on extracted features of each input
+context window and a per-subject memory matrix calibrated on the
+\textit{ens\_fit} split.
+
+\paragraph{Feature Extraction.}
+Given an input context window $\mathbf{x}\in\mathbb{R}^{L_{\mathrm{in}}}$, we
+extract a 20-dimensional feature vector $\boldsymbol{\phi}(\mathbf{x})$
+capturing statistical, shape, trend, autocorrelation, spectral, and activity
+characteristics:
+\begin{itemize}[noitemsep]
+  \item \textit{Basic statistics}: mean, std, min, max, range.
+  \item \textit{Shape}: skewness, kurtosis, coefficient of variation.
+  \item \textit{Trend}: linear slope, second derivative (curvature).
+  \item \textit{Autocorrelation}: at lags $\tau\in\{1,5,10,20\}$.
+  \item \textit{Spectral}: dominant frequency, spectral entropy.
+  \item \textit{Activity}: zero-crossing rate, peak density.
+  \item \textit{Percentiles}: 25th and 75th quantiles.
+\end{itemize}
+
+\paragraph{AiNet Clustering.}
+The aiNet algorithm \cite{decastro2000} is applied to the feature vectors from
+the \textit{ens\_fit} split to learn $K=30$ memory antibodies (centroids)
+$\{c_1,\ldots,c_K\}$ in the 20-dimensional feature space.  The algorithm
+iterates through clonal selection (5 clones per antibody), somatic
+hypermutation (mutation inversely proportional to affinity), and network
+suppression (removing antibodies closer than $\sigma_s=0.3$) for 50
+iterations.
+
+\paragraph{Affinity Computation.}
+For a test input with feature vector $\boldsymbol{\phi}(\mathbf{x})$, affinity
+to antibody $k$ is computed via a Gaussian kernel:
+\begin{equation}
+  a_k = \exp\!\left(-\frac{\|\boldsymbol{\phi}(\mathbf{x})-c_k\|^2}{2\sigma^2}\right),
+  \qquad \sigma = 1.0.
+\end{equation}
+
+\paragraph{Per-Subject Memory Calibration.}
+For each subject $i$ in the \textit{ens\_fit} split, a memory matrix
+$M_i\in\mathbb{R}^{K\times N}$ is built by evaluating which base model $m$
+predicted best for each antibody $k$.  $M_i$ is normalised to a probability
+distribution: $M_i[k,m]\geq0$, $\sum_m M_i[k,m]=1$.
+
+\paragraph{Adaptive Inference.}
+At test time, for a window from subject $i$ with affinity vector
+$\mathbf{a}\in\mathbb{R}^K$, the adaptive weight vector is:
+\begin{equation}
+  \mathbf{w}^*(i,\mathbf{x})
+    = \operatorname{softmax}\!\left(\sum_{k=1}^{K} a_k \cdot M_i[k,:]\right).
+\end{equation}
+The final prediction is:
+\begin{equation}
+  \hat{y}_{\mathrm{AIS}}(t) = \sum_{m=1}^{N} w^*_m\, \hat{y}_m(t).
+\end{equation}
+
+\paragraph{Out-of-Distribution Detection.}
+A KD-tree built on the \textit{ens\_fit} feature distribution detects test
+windows falling outside the calibrated feature space (beyond the 99th
+percentile distance).  For such windows, TCN—the best individual
+performer—serves as fallback.
+
+% ─────────────────────────────────────────────────────────────────────────────
+\section{Experimental Setup}
+\label{sec:setup}
+% ─────────────────────────────────────────────────────────────────────────────
+
+\subsection{Evaluation Metrics}
+
+All metrics are computed on the held-out split after restoring predictions to
+the original bpm scale.  For each evaluation window we compute:
+
+\begin{itemize}
+  \item \textbf{MAPE}: Mean Absolute Percentage Error (\%), mean across
+        windows.
+        $\mathrm{MAPE} = \frac{1}{T}\sum_{t=1}^{T}
+        \frac{|\hat{y}(t)-y(t)|}{|y(t)|}\times 100$
+  \item \textbf{MAPE$_{\mathrm{med}}$}: Median MAPE across windows (robust to
+        outlier windows).
+  \item \textbf{DTW}: Dynamic Time Warping distance (Sakoe-Chiba band,
+        $w=20$), mean across windows.
+  \item \textbf{Pearson}: Mean Pearson correlation between predicted and true
+        HR trajectories across windows.
+  \item \textbf{Pearson$_{\mathrm{med}}$}: Median Pearson correlation across
+        windows.
+\end{itemize}
+
+MAPE and DTW measure magnitude accuracy; Pearson measures shape similarity.
+The median variants guard against the influence of anomalous windows.
+
+\subsection{Experiment Configurations}
+
+\begin{table}[H]
+  \centering
+  \caption{Experiment configurations.}
+  \label{tab:configs}
+  \begin{tabular}{lccc}
+    \toprule
+    Config & $L_{\mathrm{in}}$ & $L_{\mathrm{out}}$ & Approx.\ held-out windows \\
+    \midrule
+    Short horizon & 45  & 45  & $\approx$24{,}302 \\
+    Long horizon  & 200 & 200 & $\approx$24{,}302 \\
+    \bottomrule
+  \end{tabular}
+\end{table}
+
+\subsection{Ensemble Optimisation Details}
+
+For the optimisation-based ensemble, the objective metric is MAPE
+(minimisation).  Nelder-Mead is run with tolerance $10^{-8}$ and a maximum of
+10{,}000 iterations.  Initial weights are uniform ($1/N$).
+Post-optimisation, weights below $10^{-4}$ are zeroed and the remainder
+renormalised.  For stacking, Ridge regression ($\alpha=1.0$) is fit on the
+$24{,}301\times(N\times L_{\mathrm{out}})$ feature matrix.
+
+\subsection{Implementation}
+
+Experiments are implemented in Python 3.10+ using TensorFlow/Keras 2.x for
+local models, PyTorch and the HuggingFace \texttt{transformers} library for
+foundation models, \texttt{dtaidistance} for DTW, \texttt{scipy} for
+Nelder-Mead optimisation, and \texttt{scikit-learn} for Ridge regression.
+
+% ─────────────────────────────────────────────────────────────────────────────
+\section{Results and Discussion}
+\label{sec:results}
+% ─────────────────────────────────────────────────────────────────────────────
+
+\subsection{Individual Model Performance (Short Horizon, $L=45$)}
+
+Table~\ref{tab:individual_45} presents individual model results on the held-out
+split for the 45-step window configuration.
+
+\begin{table}[H]
+  \centering
+  \caption{Individual model performance ($L_{\mathrm{in}}=L_{\mathrm{out}}=45$,
+           held-out split). $\downarrow$: lower is better;
+           $\uparrow$: higher is better.  Best local model in \textbf{bold}.}
+  \label{tab:individual_45}
+  \begin{tabular}{lccccc}
+    \toprule
+    Model & MAPE$\downarrow$ & MAPE$_{\mathrm{med}}\downarrow$ &
+            DTW$\downarrow$ & Pearson$\uparrow$ &
+            Pearson$_{\mathrm{med}}\uparrow$ \\
+    \midrule
+    \textbf{TCN}    & \textbf{3.8462} & \textbf{2.8807} & \textbf{33.5397}
+                    & 0.4983 & \textbf{0.8539} \\
+    EncDec          & 3.8927 & 2.9201 & 34.2918 & 0.4859 & 0.8387 \\
+    LSTM            & 3.9529 & 2.9434 & 34.0864 & 0.4892 & 0.8328 \\
+    N-BEATS         & 4.9197 & 3.9311 & 43.1387 & 0.4315 & 0.7923 \\
+    TiDE            & 5.7504 & 3.8814 & 48.3740 & 0.4694 & 0.7858 \\
+    iTransformer    & 8.5280 & 6.9577 & 77.3972 & 0.2578 & 0.6920 \\
+    \midrule
+    MOMENT          & \TBD   & \TBD   & \TBD    & \TBD   & \TBD   \\
+    Moirai          & \TBD   & \TBD   & \TBD    & \TBD   & \TBD   \\
+    \bottomrule
+  \end{tabular}
+\end{table}
+
+Among local models, TCN achieves the best MAPE (3.85\%) and
+Pearson$_{\mathrm{med}}$ (0.854), confirming the effectiveness of dilated
+convolutions for capturing multi-scale HR dynamics.  EncDec and LSTM are
+closely competitive, forming a cluster of top-three performers.  N-BEATS shows
+degraded DTW (43.14 vs.\ 33.54 for TCN), suggesting that its basis-expansion
+decomposition may not align well with the irregular HR patterns encountered in
+exercise protocols.
+
+TiDE and iTransformer underperform substantially.  The gap between TCN and
+iTransformer is particularly noteworthy: iTransformer's MAPE (8.53\%) is
+$2.2\times$ higher than TCN's (3.85\%).  The inverted attention mechanism,
+which attends over the variate dimension, loses its advantage in the purely
+univariate setting.
+
+\subsection{Ensemble Performance (Short Horizon, $L=45$)}
+
+Table~\ref{tab:ensemble_45} presents ensemble results on the held-out split.
+
+\begin{table}[H]
+  \centering
+  \caption{Ensemble method performance ($L_{\mathrm{in}}=L_{\mathrm{out}}=45$,
+           held-out split, 6 local models).  Best result in \textbf{bold}.}
+  \label{tab:ensemble_45}
+  \begin{tabular}{lccccc}
+    \toprule
+    Method & MAPE$\downarrow$ & MAPE$_{\mathrm{med}}\downarrow$ &
+             DTW$\downarrow$ & Pearson$\uparrow$ &
+             Pearson$_{\mathrm{med}}\uparrow$ \\
+    \midrule
+    Simple Average      & 4.3524 & 3.4206 & 38.0014 & 0.5016 & 0.8568 \\
+    Weighted (Optimised)& 3.8010 & 2.8505 & 33.3687 & \textbf{0.5031} & 0.8563 \\
+    \textbf{Stacking (Ridge)} & \textbf{3.7540} & 2.9064 & \textbf{33.2738}
+                              & 0.4955 & 0.8329 \\
+    \bottomrule
+  \end{tabular}
+\end{table}
+
+\paragraph{Simple average degrades performance.}
+The simple average (MAPE=4.35\%) is worse than TCN alone (MAPE=3.85\%),
+demonstrating that averaging uniformly over heterogeneous models—including poor
+performers like iTransformer—dilutes the signal.
+
+\paragraph{Optimised weights recover individual-model performance.}
+The weighted ensemble (MAPE=3.80\%) marginally outperforms TCN (3.85\%) by
+effectively zeroing out underperforming models.  The optimised weight vector is:
+TCN=0.476, EncDec=0.323, LSTM=0.151, N-BEATS=0.050, TiDE=0.000, iTransformer=0.000.
+
+\paragraph{Stacking achieves the lowest MAPE.}
+Ridge stacking (MAPE=3.754\%) yields an \textbf{11.9\% relative MAPE reduction}
+versus the simple-average baseline (4.352\% $\to$ 3.754\%).  The horizon-aware
+meta-learner learns position-dependent weights—for instance, favouring TCN at
+early forecast steps and EncDec at later steps—a pattern that static weights
+cannot capture.
+
+\paragraph{Pearson metrics favour averaging.}
+Simple averaging achieves competitive Pearson$_{\mathrm{med}}$ (0.857) and mean
+Pearson (0.502).  This suggests a trade-off: stacking reduces amplitude errors
+(MAPE, DTW) at a marginal cost to shape preservation in some windows.
+
+\subsection{Individual Model Performance (Long Horizon, $L=200$)}
+
+\begin{table}[H]
+  \centering
+  \caption{Individual model performance ($L_{\mathrm{in}}=L_{\mathrm{out}}=200$,
+           held-out split).}
+  \label{tab:individual_200}
+  \begin{tabular}{lccccc}
+    \toprule
+    Model & MAPE$\downarrow$ & MAPE$_{\mathrm{med}}\downarrow$ &
+            DTW$\downarrow$ & Pearson$\uparrow$ &
+            Pearson$_{\mathrm{med}}\uparrow$ \\
+    \midrule
+    TCN          & \TBD & \TBD & \TBD & \TBD & \TBD \\
+    EncDec       & \TBD & \TBD & \TBD & \TBD & \TBD \\
+    LSTM         & \TBD & \TBD & \TBD & \TBD & \TBD \\
+    N-BEATS      & \TBD & \TBD & \TBD & \TBD & \TBD \\
+    TiDE         & \TBD & \TBD & \TBD & \TBD & \TBD \\
+    iTransformer & \TBD & \TBD & \TBD & \TBD & \TBD \\
+    MOMENT       & \TBD & \TBD & \TBD & \TBD & \TBD \\
+    Moirai       & \TBD & \TBD & \TBD & \TBD & \TBD \\
+    \bottomrule
+  \end{tabular}
+\end{table}
+
+\subsection{Ensemble Performance (Long Horizon, $L=200$)}
+
+\begin{table}[H]
+  \centering
+  \caption{Ensemble method performance ($L_{\mathrm{in}}=L_{\mathrm{out}}=200$,
+           held-out split).  Partial MAPE values from initial notebook
+           execution; remaining metrics and AIS results pending
+           re-execution.}
+  \label{tab:ensemble_200}
+  \begin{tabular}{lccccc}
+    \toprule
+    Method & MAPE$\downarrow$ & MAPE$_{\mathrm{med}}\downarrow$ &
+             DTW$\downarrow$ & Pearson$\uparrow$ &
+             Pearson$_{\mathrm{med}}\uparrow$ \\
+    \midrule
+    Simple Average       & 5.3829 & \TBD & \TBD & \TBD & \TBD \\
+    Weighted (Optimised) & 4.9767 & \TBD & \TBD & \TBD & \TBD \\
+    Stacking (Ridge)     & 4.2210 & \TBD & \TBD & \TBD & \TBD \\
+    \textbf{AIS-Ensemble}& \TBD   & \TBD & \TBD & \TBD & \TBD \\
+    \bottomrule
+  \end{tabular}
+\end{table}
+
+\subsection{AIS-Ensemble Analysis}
+\label{ssec:ais_results}
+
+Beyond aggregate MAPE, the AIS-Ensemble enables novel diagnostic analyses.
+
+\paragraph{Out-of-distribution detection.}
+The nonself ratio—the fraction of test windows flagged as out-of-distribution
+per subject—varies across subjects and may reveal novel exercise patterns or
+unusual HR response profiles not encountered during calibration.
+
+\paragraph{Per-subject adaptation.}
+The subject memory matrix $M_i$ captures which model performs best for each
+cluster of input patterns specific to subject $i$.  This allows the
+AIS-Ensemble to weight TCN more heavily for subjects whose HR patterns cluster
+near centroids where TCN historically outperforms, while favouring EncDec for
+subjects with smoother, more predictable HR trajectories.
+
+\paragraph{Cluster interpretation.}
+By inspecting the aiNet centroids $c_k$ in the feature space, one can
+characterise the types of HR windows for which different models excel—for
+instance, high-slope, high-variability windows (sprint transitions) vs.\
+steady-state aerobic windows.
+
+\subsection{Foundation Model Discussion}
+
+Foundation models represent a fundamentally different paradigm from local
+models, bringing pretrained representations from large-scale time series
+corpora.  However, HR during exercise is a highly domain-specific signal with
+characteristics—sharp impulse responses, subject-specific baselines,
+protocol-driven non-stationarities—that may not be well-represented in
+general-purpose pretraining datasets.  We hypothesise that:
+\begin{enumerate}
+  \item Zero-shot performance of MOMENT and Moirai will trail well-trained
+        local models (TCN, LSTM) by a significant margin.
+  \item Fine-tuning should substantially recover performance.
+  \item Foundation model advantage may be most pronounced for subjects with
+        limited training data, where pretrained representations provide a
+        useful inductive bias.
+\end{enumerate}
+These hypotheses will be evaluated upon re-execution of the fine-tuning
+notebooks.
+
+% ─────────────────────────────────────────────────────────────────────────────
+\section{Conclusion}
+\label{sec:conclusion}
+% ─────────────────────────────────────────────────────────────────────────────
+
+This paper presents a systematic evaluation of individual deep learning models,
+time series foundation models, and ensemble strategies for multi-step heart
+rate forecasting during exercise.  Key findings include:
+
+\begin{enumerate}
+  \item \textbf{Local convolutional models (TCN) are the strongest individual
+        performers}, outperforming recurrent, transformer-based, and MLP-based
+        architectures on short-horizon HR forecasting.
+
+  \item \textbf{Ensemble methods are highly sensitive to model heterogeneity.}
+        Simple averaging degrades performance when low-quality models
+        (iTransformer, TiDE) are included; optimisation-based weight assignment
+        recovers performance by zeroing out underperformers.  Stacking achieves
+        the best absolute performance with an 11.9\% relative MAPE improvement
+        over simple averaging at $L=45$.
+
+  \item \textbf{The proposed AIS-Ensemble introduces subject-adaptive,
+        context-aware combination}, offering a principled mechanism for
+        personalised HR forecasting that goes beyond static weight assignment.
+
+  \item \textbf{Longer forecast horizons amplify ensemble benefits}, making
+        sophisticated combination strategies more valuable when predicting
+        extended HR trajectories.
+\end{enumerate}
+
+Future work will explore: (i) incorporating physiological covariates (workload,
+cadence, power output) as ensemble conditioning signals; (ii) online adaptation
+of AIS memory matrices as new sessions accumulate; (iii) evaluation on
+additional subject populations; and (iv) probabilistic forecasting to quantify
+uncertainty in predicted HR trajectories.
+
+% ─────────────────────────────────────────────────────────────────────────────
+\appendix
+% ─────────────────────────────────────────────────────────────────────────────
+
+\section{Model Hyperparameters}
+
+\begin{table}[H]
+  \centering
+  \caption{Local model hyperparameter summary.}
+  \label{tab:hparams_local}
+  \begin{tabular}{ll}
+    \toprule
+    Model & Key hyperparameters \\
+    \midrule
+    TCN          & filters=32, kernel\_size=12, dilations=\{1,2,4,8\}, dropout=0.1 \\
+    N-BEATS      & stacks=2, blocks=3, layers=4, layer\_width=256 \\
+    LSTM         & units=[128,\,64], dropout=0.2, recurrent\_dropout=0.1 \\
+    TiDE         & encoder\_dim=256, decoder\_dim=256, temporal\_width=4, dropout=0.3 \\
+    EncDec       & encoder\_units=128, decoder\_units=128, latent\_dim=64 \\
+    iTransformer & d\_model=128, n\_heads=8, d\_ff=256, n\_layers=2 \\
+    \bottomrule
+  \end{tabular}
+\end{table}
+
+\begin{table}[H]
+  \centering
+  \caption{Foundation model configuration.}
+  \label{tab:hparams_fm}
+  \begin{tabular}{lllll}
+    \toprule
+    Model  & Variant & Context length & Epochs & LR \\
+    \midrule
+    MOMENT & \texttt{MOMENT-1-large}     & 512  & 5    & $5\times10^{-4}$ \\
+    Moirai & \texttt{moirai-1.1-R-small} & auto & \TBD & \TBD \\
+    \bottomrule
+  \end{tabular}
+\end{table}
+
+\section{AIS-Ensemble Hyperparameters}
+
+\begin{table}[H]
+  \centering
+  \caption{AIS-Ensemble hyperparameters.}
+  \label{tab:hparams_ais}
+  \begin{tabular}{ll}
+    \toprule
+    Parameter & Value \\
+    \midrule
+    Number of antibodies ($K$)    & 30 \\
+    Feature dimension              & 20 \\
+    Affinity kernel $\sigma$       & 1.0 \\
+    Suppression threshold $\sigma_s$ & 0.3 \\
+    Clones per antibody            & 5 \\
+    Max iterations                 & 50 \\
+    OOD threshold (percentile)     & 99th \\
+    Fallback model                 & TCN \\
+    \bottomrule
+  \end{tabular}
+\end{table}
+
+% ─────────────────────────────────────────────────────────────────────────────
+%  Bibliography  (use BibTeX file paper_draft.bib, or paste entries below)
+% ─────────────────────────────────────────────────────────────────────────────
+\bibliographystyle{plainnat}
+\bibliography{paper_draft}
+
+% ── Inline bibliography fallback (remove when .bib is ready) ──────────────
+% \begin{thebibliography}{99}
+%
+% \bibitem{achten2003}
+% J.~Achten and A.~E.~Jeukendrup,
+% ``Heart rate monitoring: applications and limitations,''
+% \textit{Sports Medicine}, vol.~33, no.~7, pp.~517--538, 2003.
+%
+% \bibitem{bai2018}
+% S.~Bai, J.~Z.~Kolter, and V.~Koltun,
+% ``An empirical evaluation of generic convolutional and recurrent networks
+% for sequence modeling,''
+% \textit{arXiv:1803.01271}, 2018.
+%
+% \bibitem{box2015}
+% G.~E.~P.~Box, G.~M.~Jenkins, G.~C.~Reinsel, and G.~M.~Ljung,
+% \textit{Time Series Analysis: Forecasting and Control}, 5th ed.
+% Wiley, 2015.
+%
+% \bibitem{das2024tide}
+% A.~Das, W.~Kong, A.~Leach, S.~Mathur, R.~Sen, and R.~Yu,
+% ``Long-term forecasting with TiDE: Time-series dense encoder,''
+% \textit{Transactions on Machine Learning Research}, 2024.
+%
+% \bibitem{dasgupta1999}
+% D.~Dasgupta (Ed.),
+% \textit{Artificial Immune Systems and Their Applications}.
+% Springer, 1999.
+%
+% \bibitem{decastro2000}
+% L.~N.~de~Castro and F.~J.~Von~Zuben,
+% ``An evolutionary immune network for data clustering,''
+% in \textit{Proc.\ IEEE SBRN}, pp.~84--89, 2000.
+%
+% \bibitem{goswami2024moment}
+% A.~Goswami \textit{et al.},
+% ``MOMENT: A family of open time-series foundation models,''
+% in \textit{Proc.\ ICML}, 2024.
+%
+% \bibitem{jacobs1991}
+% R.~A.~Jacobs, M.~I.~Jordan, S.~J.~Nowlan, and G.~E.~Hinton,
+% ``Adaptive mixtures of local experts,''
+% \textit{Neural Computation}, vol.~3, no.~1, pp.~79--87, 1991.
+%
+% \bibitem{liu2024itransformer}
+% Y.~Liu \textit{et al.},
+% ``iTransformer: Inverted transformers are effective for time series
+% forecasting,''
+% in \textit{Proc.\ ICLR}, 2024.
+%
+% \bibitem{makridakis2018m4}
+% S.~Makridakis, E.~Spiliotis, and V.~Assimakopoulos,
+% ``The M4 competition: Results, findings, conclusion and way forward,''
+% \textit{International Journal of Forecasting}, vol.~34, no.~4,
+% pp.~802--808, 2018.
+%
+% \bibitem{nakamura2020}
+% M.~Nakamura \textit{et al.},
+% ``Heart rate prediction during cycling exercise with deep learning,''
+% \textit{IEEE Journal of Biomedical and Health Informatics},
+% vol.~24, no.~6, pp.~1634--1643, 2020.
+%
+% \bibitem{nelder1965}
+% J.~A.~Nelder and R.~Mead,
+% ``A simplex method for function minimization,''
+% \textit{The Computer Journal}, vol.~7, no.~4, pp.~308--313, 1965.
+%
+% \bibitem{oreshkin2020}
+% B.~N.~Oreshkin, D.~Carpov, N.~Chapados, and Y.~Bengio,
+% ``N-BEATS: Neural basis expansion analysis for interpretable time series
+% forecasting,''
+% in \textit{Proc.\ ICLR}, 2020.
+%
+% \bibitem{rice1976}
+% J.~R.~Rice,
+% ``The algorithm selection problem,''
+% \textit{Advances in Computers}, vol.~15, pp.~65--118, 1976.
+%
+% \bibitem{wolpert1992}
+% D.~H.~Wolpert,
+% ``Stacked generalization,''
+% \textit{Neural Networks}, vol.~5, no.~2, pp.~241--259, 1992.
+%
+% \bibitem{woo2024moirai}
+% G.~Woo \textit{et al.},
+% ``Unified training of universal time series forecasting transformers,''
+% in \textit{Proc.\ ICML}, 2024.
+%
+% \end{thebibliography}
+
+\end{document}
