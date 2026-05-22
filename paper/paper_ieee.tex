@@ -1,4 +1,5 @@
 \documentclass[conference]{IEEEtran}
+\IEEEoverridecommandlockouts
 
 % ── Encoding ─────────────────────────────────────────────────────────────────
 \usepackage[utf8]{inputenc}
@@ -14,12 +15,9 @@
 
 % ── Figures ──────────────────────────────────────────────────────────────────
 \usepackage{graphicx}
-\usepackage{float}
 
-% ── Colors & links ───────────────────────────────────────────────────────────
+% ── Colors ───────────────────────────────────────────────────────────────────
 \usepackage[dvipsnames]{xcolor}
-\usepackage{hyperref}
-\hypersetup{colorlinks=true,linkcolor=black,citecolor=black,urlcolor=black}
 
 % ── Misc ─────────────────────────────────────────────────────────────────────
 \usepackage{microtype}
@@ -27,8 +25,10 @@
 \usepackage{algorithm}
 \usepackage{algpseudocode}
 \usepackage{enumitem}
+\usepackage{hyperref}
+\hypersetup{colorlinks=false}
 
-% ── Draft helpers (remove before submission) ─────────────────────────────────
+% ── Draft marker ─────────────────────────────────────────────────────────────
 \newcommand{\TBD}{\textcolor{red}{\textbf{[TBD]}}}
 
 % ── Shorthands ───────────────────────────────────────────────────────────────
@@ -41,11 +41,11 @@
 % ─────────────────────────────────────────────────────────────────────────────
 \begin{document}
 
-\title{Adaptive Ensemble Learning for Multi-Step Heart Rate Forecasting:\\
+\title{Adaptive Ensemble Learning for Multi-Step Heart Rate Forecasting:
        Deep Learning, Foundation Models, and Artificial Immune Systems}
 
 \author{%
-  \IEEEauthorblockN{[Author Names]}\\
+  \IEEEauthorblockN{[Author Names]}
   \IEEEauthorblockA{[Institution / Department]\\
   [City, Country]\\
   adbyb.es@gmail.com}
@@ -56,29 +56,26 @@
 % ─────────────────────────────────────────────────────────────────────────────
 \begin{abstract}
 Accurate multi-step heart rate (HR) forecasting during physical activity is
-essential for real-time sports performance monitoring and health risk
-assessment. We propose a comprehensive ensemble framework that combines six
-locally trained deep learning architectures---Temporal Convolutional Network
-(TCN), N-BEATS, LSTM, TiDE, Encoder-Decoder LSTM, and iTransformer---with two
-fine-tuned time series foundation models (MOMENT and Moirai). Four ensemble
-strategies are compared under a strict anti-leakage protocol: simple averaging,
-optimisation-based weighted combination, Ridge regression stacking, and a novel
-Artificial Immune System adaptive ensemble (AIS-Ensemble). Experiments are
-conducted on a real-world multi-subject, multi-session exercise dataset
-comprising 39 subjects across 10 structured training protocols. Results show
-that ensemble methods consistently outperform individual models, with Ridge
-stacking achieving up to an 11.9\% relative MAPE reduction over the
-simple-average baseline. An exhaustive search over all 31 non-empty subsets of
-five models confirms that stacking dominates optimisation-based weighting across
-all combination sizes. The AIS-Ensemble introduces per-subject adaptation and
-out-of-distribution detection; while it does not surpass stacking in aggregate
-MAPE, it provides a biologically inspired interpretable mechanism for
-context-sensitive combination and reveals subject-level predictability patterns.
+essential for sports performance monitoring and health risk assessment.  We
+propose an ensemble framework combining six locally trained deep learning
+architectures---TCN, N-BEATS, LSTM, TiDE, Encoder-Decoder LSTM, and
+iTransformer---with two fine-tuned time series foundation models (MOMENT and
+Moirai).  Four ensemble strategies are evaluated under a strict anti-leakage
+protocol: simple averaging, optimisation-based weighted combination, Ridge
+regression stacking, and a novel Artificial Immune System adaptive ensemble
+(AIS-Ensemble).  Experiments are conducted on a real-world multi-subject
+exercise dataset of 39 subjects across 10 structured sessions.  Results show
+that Ridge stacking achieves an 11.9\% relative MAPE reduction over the
+simple-average baseline at a 45-step horizon, and consistently dominates across
+all 31 non-empty model subsets in an exhaustive permutation search.  The
+AIS-Ensemble introduces per-subject adaptation and out-of-distribution detection
+via negative selection, providing subject-level predictability insights beyond
+what static ensemble methods offer.
 \end{abstract}
 
 \begin{IEEEkeywords}
 heart rate forecasting, time series, deep learning, foundation models, ensemble
-learning, artificial immune system, sports analytics
+learning, artificial immune system, stacking
 \end{IEEEkeywords}
 
 % ─────────────────────────────────────────────────────────────────────────────
@@ -89,76 +86,67 @@ learning, artificial immune system, sports analytics
 Heart rate (HR) is one of the most informative physiological signals for
 exercise intensity quantification, fatigue monitoring, and cardiovascular health
 assessment \cite{achten2003}. The ability to forecast future HR trajectories in
-real time --- given a short history of recent measurements --- would enable
-proactive training-load control, early detection of overexertion, and
-personalised pacing strategies.
+real time---given a recent measurement window---would enable proactive training
+load control, early detection of overexertion, and personalised pacing
+strategies.
 
-Classical approaches based on ARIMA or linear regression with physiological
-covariates \cite{box2015} struggle with the nonlinear, non-stationary dynamics
-of exercise-induced HR responses. Deep learning architectures --- convolutional,
-recurrent, and attention-based --- have substantially improved accuracy on
-physiological time series \cite{nakamura2020}. More recently, large-scale time
-series foundation models (MOMENT \cite{goswami2024moment}, Moirai
-\cite{woo2024moirai}) raise the question of whether domain-agnostic pretraining
-can match or surpass specialised local models in the physiological domain.
+Classical approaches based on ARIMA or linear regression \cite{box2015} fail
+to capture the nonlinear, non-stationary dynamics of exercise-induced HR
+responses. Deep learning---convolutional, recurrent, and attention-based
+architectures---has substantially improved accuracy on physiological time
+series \cite{nakamura2020}. More recently, time series foundation models
+such as MOMENT \cite{goswami2024moment} and Moirai \cite{woo2024moirai}, pretrained
+on large corpora, raise the question of whether domain-agnostic representations
+can compete with specialised local models. Independently, ensemble methods
+have proven consistently superior to individual models in forecasting
+competitions \cite{makridakis2018m4}, yet naive averaging can be harmful when
+model quality is highly non-uniform.
 
-Independently, ensemble methods have proven consistently superior to individual
-models in forecasting competitions \cite{makridakis2018m4}. Yet naive averaging
-can be harmful when model quality is highly non-uniform, and the optimal
-combination strategy may vary across subjects given the substantial inter-individual
-variability in HR dynamics.
-
-\textbf{Contributions.} This paper: (1) provides a systematic comparison of
-eight models (six local + two foundation) for multi-step HR forecasting at two
-horizon lengths; (2) evaluates four ensemble strategies under a rigorous
-anti-leakage protocol that includes an exhaustive search over all 31 subsets of
-five base models; (3) introduces an AIS-based adaptive ensemble that adapts
-combination weights per subject using immunological memory and detects
-out-of-distribution windows via negative selection; and (4) provides empirical
-evidence that model heterogeneity and ensemble sophistication both matter, with
-stacking emerging as the dominant strategy.
+This paper makes four contributions:
+\begin{enumerate}[leftmargin=*,noitemsep,topsep=2pt]
+  \item Systematic comparison of eight models (six local + two foundation) for
+        multi-step HR forecasting at two horizon lengths ($L \in \{45, 200\}$).
+  \item Evaluation of four ensemble strategies under a rigorous anti-leakage
+        protocol including an exhaustive search over all 31 non-empty subsets of
+        five base models.
+  \item A novel AIS-based adaptive ensemble that adjusts combination weights
+        per subject using immunological memory and detects out-of-distribution
+        windows via negative selection.
+  \item Empirical evidence that Ridge stacking consistently dominates
+        optimisation-based weighting across all model subsets and horizon lengths.
+\end{enumerate}
 
 % ─────────────────────────────────────────────────────────────────────────────
 \section{Related Work}
 \label{sec:related}
 % ─────────────────────────────────────────────────────────────────────────────
 
-\subsection{Heart Rate Prediction with Deep Learning}
+\subsection{Heart Rate Prediction}
+Early physiological forecasting relied on ARIMA and linear regression
+\cite{box2015}. LSTM and CNN approaches substantially improved accuracy on
+exercise HR by capturing nonlinear temporal patterns \cite{nakamura2020}.
+Multi-step forecasting remains harder than single-step due to error
+accumulation across the horizon.
 
-Early physiological signal forecasting relied on ARIMA and linear regression
-models \cite{box2015}. Deep learning approaches --- particularly LSTM
-\cite{nakamura2020} and convolutional networks --- substantially improved
-accuracy on exercise HR by capturing nonlinear temporal patterns. Attention
-mechanisms further boosted performance on longer sequences \cite{liu2024itransformer}.
-Multi-step (sequence-to-sequence) forecasting remains more challenging than
-single-step prediction, as errors accumulate along the horizon.
-
-\subsection{Time Series Foundation Models}
-
+\subsection{Foundation Models for Time Series}
 MOMENT \cite{goswami2024moment} and Moirai \cite{woo2024moirai} are
-transformer-based models pretrained on diverse large-scale corpora, offering
-zero-shot or fine-tuned forecasting. Their advantage in specialised domains
-such as physiological signals is unclear: pretraining may not cover
-exercise-induced HR dynamics, but the learned representations can still
-provide a useful inductive bias, especially when per-subject data is scarce.
+transformer-based models pretrained on large time series corpora. Their benefit
+in physiological domains is unclear: pretraining may not cover exercise-induced
+dynamics, but learned representations can provide a useful inductive bias,
+especially for data-scarce subjects.
 
-\subsection{Ensemble Methods in Forecasting}
-
-Ensemble diversity is the primary driver of improvement over individual models
-\cite{makridakis2018m4}. Stacking \cite{wolpert1992} trains a meta-learner on
-held-out validation predictions, enabling horizon-dependent combination.
-Mixture-of-experts (MoE) \cite{jacobs1991} and algorithm-selection
-\cite{rice1976} approaches select or weight models based on input features,
+\subsection{Ensemble Methods}
+Ensemble diversity drives improvement over individual models \cite{makridakis2018m4}.
+Stacking \cite{wolpert1992} trains a meta-learner on held-out predictions,
+enabling horizon-dependent combination. Mixture-of-experts \cite{jacobs1991}
+and algorithm selection \cite{rice1976} weight models by input features,
 motivating our AIS-Ensemble.
 
 \subsection{Artificial Immune Systems}
-
-AIS are biologically inspired computational frameworks \cite{dasgupta1999}.
-The aiNet algorithm \cite{decastro2000} constructs a compact network of memory
-cells (antibodies) via clonal selection and hypermutation, learning a compressed
-representation of the input distribution. Applications span clustering, anomaly
-detection, and classification, but their use as an adaptive ensemble mechanism
-for physiological time series forecasting has not been previously reported.
+AIS are bio-inspired frameworks \cite{dasgupta1999}. The aiNet algorithm
+\cite{decastro2000} builds a compact memory-cell network via clonal selection
+and hypermutation. Applications span clustering and anomaly detection, but
+their use as adaptive ensemble mechanisms for physiological forecasting is novel.
 
 % ─────────────────────────────────────────────────────────────────────────────
 \section{Dataset and Preprocessing}
@@ -166,81 +154,68 @@ for physiological time series forecasting has not been previously reported.
 % ─────────────────────────────────────────────────────────────────────────────
 
 \subsection{Data Collection}
-
 The dataset comprises HR time series from \textbf{39 subjects} across
-\textbf{10 structured exercise sessions} (Sessions 01--10), including FTP ramp
-tests, base conditioning (BC) exercises, and HIIT protocols. Each series
-contains 1,841 timesteps sampled at a uniform frequency (HR in bpm), yielding
-132 total series prior to splitting.
+\textbf{10 structured exercise sessions} (FTP ramp tests, base conditioning,
+and HIIT protocols). Each series contains 1,841 timesteps at a uniform
+sampling frequency (HR in bpm), yielding 132 series in total.
 
 \subsection{Preprocessing}
-
 Each series is independently standardised (zero mean, unit variance) using
-parameters estimated exclusively from the training partition. Stored
-standardisation parameters are used to restore predictions to bpm before
-computing metrics.
+parameters estimated only from the training partition. Parameters are stored
+and used to restore predictions to bpm before metric computation.
 
-\subsection{Data Partitioning}
-
-The dataset is split chronologically into a \textbf{70\% training} partition
-(91 series) used exclusively to train base models, and a \textbf{30\%
-evaluation} partition (39 series). The evaluation partition is further divided
-into two equal halves:
-\begin{itemize}[noitemsep, topsep=2pt]
-  \item \textit{ens\_fit} (${\approx}$24,301 windows): used to fit ensemble
-        weights, the stacking meta-learner, and AIS memory matrices.
-  \item \textit{held\_out} (${\approx}$24,302 windows): used exclusively for
-        final metric reporting.
+\subsection{Data Partitioning and Windowing}
+The data is split chronologically: \textbf{70\% training} (91 series) for
+base model training, and \textbf{30\% evaluation} (39 series). The evaluation
+partition is further split into two equal halves:
+\begin{itemize}[noitemsep,topsep=2pt]
+  \item \textit{ens\_fit}: $\approx$18,256--24,301 windows (varies with $L$),
+        used to fit ensemble weights, the Ridge meta-learner, and AIS memory.
+  \item \textit{held\_out}: $\approx$18,257--24,302 windows, used exclusively
+        for final metric computation.
 \end{itemize}
 
-Sliding-window instances are generated with equal input and output lengths
-$\Lin = \Lout \in \{45, 200\}$ and stride 1. All individual model predictions
-are cached before any ensemble fitting, ensuring no ensemble method accesses
-held-out targets during training.
+Sliding-window instances are generated with $\Lin = \Lout \in \{45, 200\}$
+and stride 1. All individual predictions are cached before any ensemble
+fitting, so no ensemble method accesses held-out targets during training.
 
 % ─────────────────────────────────────────────────────────────────────────────
 \section{Models}
 \label{sec:models}
 % ─────────────────────────────────────────────────────────────────────────────
 
-\subsection{Individual Forecasting Models}
+\subsection{Local Deep Learning Models}
+All six local models follow a sequence-to-sequence paradigm: given $\Lin$
+standardised HR values, predict the next $\Lout$ values. They are trained
+exclusively on the 70\% partition with inner 70/10/20 train/val/test splits.
 
-All six local models follow a sequence-to-sequence paradigm: given
-$\Lin$ standardised HR values, predict the next $\Lout$ values. Training uses
-only the 70\% partition with inner 70/10/20 train/val/test splits.
-
-\textbf{TCN} \cite{bai2018} uses dilated causal convolutions with dilation
-factors $\{1,2,4,8\}$, kernel size 12, 32 filters per layer, and residual
-connections. Its fully parallelisable training and stable gradients make it
-well-suited for HR sequences.
+\textbf{TCN} \cite{bai2018} uses dilated causal convolutions (dilations
+$\{1,2,4,8\}$, kernel size 12, 32 filters) with residual connections.
 
 \textbf{N-BEATS} \cite{oreshkin2020} decomposes time series into trend and
-seasonality components via stacked fully connected blocks with learned basis
-expansions.
+seasonality via stacked fully connected blocks with learned basis expansions.
 
-\textbf{LSTM} uses two stacked layers with gating mechanisms that capture
-long-range dependencies characteristic of HR recovery curves.
+\textbf{LSTM} uses two stacked layers with gating mechanisms for long-range
+dependencies.
 
 \textbf{TiDE} \cite{das2024tide} encodes input history into a compact dense
-vector and decodes it into the forecast horizon using MLP layers.
+vector and decodes it via MLP layers.
 
-\textbf{EncDec} encodes the input context with one LSTM into a fixed-length
-state, then decodes it autoregressively with a second LSTM.
+\textbf{EncDec} encodes the context with one LSTM and decodes it
+autoregressively with a second LSTM.
 
 \textbf{iTransformer} \cite{liu2024itransformer} applies self-attention over
-the variate dimension rather than the time dimension. In the univariate setting,
-this reduces to standard attention over the feature representation.
+the variate dimension rather than time. In the univariate setting this reduces
+to standard attention over features.
 
 \subsection{Foundation Models}
-
-\textbf{MOMENT} (\texttt{AutonLab/MOMENT-1-large}, ${\approx}$300M parameters)
-\cite{goswami2024moment} is fine-tuned on the 70\% training partition
-(context length 512, 5 epochs, $\mathrm{lr}=5{\times}10^{-4}$, AdamW,
-forecasting head only).
+\textbf{MOMENT} (\texttt{MOMENT-1-large}, $\approx$300M parameters)
+\cite{goswami2024moment} is fine-tuned on the 70\% partition (context 512,
+5 epochs, $\mathrm{lr}=5{\times}10^{-4}$, AdamW, forecasting head only).
 
 \textbf{Moirai} (\texttt{moirai-1.1-R-small}) \cite{woo2024moirai} is
-fine-tuned with patch size 32 and frequency token \texttt{`h'}; the median of
-20 Monte Carlo samples is used as the point forecast.
+fine-tuned with patch size 32; the median of 20 Monte Carlo samples gives the
+point forecast.
 
 % ─────────────────────────────────────────────────────────────────────────────
 \section{Ensemble Methods}
@@ -248,79 +223,62 @@ fine-tuned with patch size 32 and frequency token \texttt{`h'}; the median of
 % ─────────────────────────────────────────────────────────────────────────────
 
 \subsection{Simple Average}
-
 \begin{equation}
   \hat{y}_{\mathrm{avg}}(t) = \frac{1}{N}\sum_{i=1}^{N}\hat{y}_i(t).
 \end{equation}
-
 Equal weights serve as a variance-reduction baseline requiring no fitting.
 
 \subsection{Optimisation-Based Weighted Average}
-
 \begin{equation}
   \hat{y}_{\mathrm{opt}}(t) = \sum_{i=1}^{N}w_i\hat{y}_i(t),\quad
-  w_i\ge0,\;\sum_i w_i=1,
+  w_i\ge0,\;\textstyle\sum_i w_i=1,
 \end{equation}
-
 where $\mathbf{w}$ minimises MAPE on \textit{ens\_fit} via Nelder-Mead
-\cite{nelder1965}. Weights are projected onto the probability simplex after
-each update. The optimiser is free to zero out underperforming models.
+\cite{nelder1965} with weights projected onto the probability simplex. The
+optimiser can zero out underperforming models.
 
 \subsection{Ridge Regression Stacking}
-
 A Ridge meta-learner ($\alpha=1.0$) is trained on the
-$N{\times}\Lout$-dimensional concatenation of base model predictions over
-\textit{ens\_fit}:
+$N{\times}\Lout$-dimensional concatenated predictions over \textit{ens\_fit}:
 \begin{equation}
-  \hat{y}_{\mathrm{stack}}(t) =
-    \mathbf{W}^{\!\top}[\hat{y}_1;\ldots;\hat{y}_N]+\mathbf{b}.
+  \hat{y}_{\mathrm{stack}}(t)=
+  \mathbf{W}^{\!\top}\![\hat{y}_1;\ldots;\hat{y}_N]+\mathbf{b}.
 \end{equation}
-
-Unlike static weights, stacking learns horizon-dependent combination, \ie\
-it can favour model $i$ at early forecast steps and model $j$ at later steps.
+Unlike static weights, stacking learns horizon-dependent combination.
 
 \subsection{AIS-Adaptive Ensemble}
-\label{ssec:ais}
+The AIS-Ensemble adapts combination weights per context window and per subject
+via five components.
 
-The AIS-Ensemble adapts combination weights per context window and per subject.
-It has five components:
+\textbf{Feature extraction.} A 20-dimensional vector $\boldsymbol{\phi}(x)$
+is extracted per window: basic statistics (mean, std, min, max, range), shape
+(skewness, kurtosis, CV), trend (slope, curvature), autocorrelation at lags
+$\{1,5,10,20\}$, spectral features (dominant frequency, spectral entropy),
+activity (zero-crossing rate, peak density), and percentiles (Q25, Q75).
 
-\textbf{Feature extraction.} A 20-dimensional vector $\boldsymbol{\phi}(x)$ is
-extracted from each input window, covering basic statistics (mean, std, min,
-max, range), shape (skewness, kurtosis, coefficient of variation), trend (slope,
-curvature), autocorrelation at lags $\{1,5,10,20\}$, spectral features
-(dominant frequency, spectral entropy), activity (zero-crossing rate, peak
-density), and percentiles (Q25, Q75).
+\textbf{aiNet clustering.} $K=30$ memory antibodies $\{c_k\}$ are learned from
+\textit{ens\_fit} features via clonal selection (5 clones per antibody),
+somatic hypermutation, and network suppression ($\sigma_s=0.3$) over 50
+iterations.
 
-\textbf{aiNet clustering.} The aiNet algorithm \cite{decastro2000} learns
-$K=30$ memory antibodies $\{c_k\}$ in feature space from \textit{ens\_fit}
-windows via clonal selection (5 clones per antibody), somatic hypermutation,
-and suppression (threshold $\sigma_s=0.3$) over 50 iterations.
-
-\textbf{Affinity computation.} For a test window with features
-$\boldsymbol{\phi}(x)$:
+\textbf{Affinity.} For a test window with features $\boldsymbol{\phi}(x)$:
 \begin{equation}
-  a_k = \exp\!\left(-\frac{\|\boldsymbol{\phi}(x)-c_k\|^2}{2\sigma^2}\right),
-  \quad \sigma=1.0.
+  a_k = \exp\!\left(-\tfrac{\|\boldsymbol{\phi}(x)-c_k\|^2}{2\sigma^2}\right),
+  \quad\sigma=1.0.
 \end{equation}
 
-\textbf{Per-subject memory calibration.} For each subject $i$, a memory
-matrix $M_i\in\mathbb{R}^{K\times N}$ is built on \textit{ens\_fit} by
-recording which base model predicted best for each antibody cluster.
-$M_i[k,m]$ is normalised to a probability distribution over models.
+\textbf{Subject memory.} For each subject $i$, a matrix $M_i\in\mathbb{R}^{K\times N}$
+is built on \textit{ens\_fit} recording which model predicted best per cluster.
+$M_i[k,m]$ is normalised to a probability distribution.
 
-\textbf{Adaptive inference.} For a window from subject $i$:
+\textbf{Inference.}
 \begin{equation}
-  \mathbf{w}^*(i,x)=
-    \operatorname{softmax}\!\Bigl(\sum_{k=1}^{K}a_k\cdot M_i[k,:]\Bigr),
+  \mathbf{w}^*(i,x)=\operatorname{softmax}\!\Bigl(\textstyle\sum_k a_k M_i[k,:]\Bigr),
   \quad
-  \hat{y}_{\mathrm{AIS}}=\sum_m w^*_m\hat{y}_m.
+  \hat{y}_{\mathrm{AIS}}=\textstyle\sum_m w^*_m\hat{y}_m.
 \end{equation}
-
-\textbf{Negative selection.} A KD-tree on \textit{ens\_fit} feature vectors
-flags test windows beyond the 99th percentile training distance as
-out-of-distribution (nonself). These windows fall back to TCN (best individual
-model) rather than the adaptive combination.
+A KD-tree on \textit{ens\_fit} flags windows beyond the 99th-percentile
+distance as out-of-distribution (nonself); these fall back to TCN.
 
 % ─────────────────────────────────────────────────────────────────────────────
 \section{Experimental Setup}
@@ -328,61 +286,39 @@ model) rather than the adaptive combination.
 % ─────────────────────────────────────────────────────────────────────────────
 
 \subsection{Evaluation Metrics}
+All metrics are computed on \textit{held\_out} in the original bpm scale:
+MAPE (mean absolute percentage error, \%), MAPE\textsubscript{med} (median
+MAPE, robust to outliers), DTW (Dynamic Time Warping, Sakoe-Chiba $w=20$),
+Pearson (mean correlation), and Pearson\textsubscript{med} (median
+correlation).
 
-All metrics are computed on \textit{held\_out} after restoring predictions to
-bpm scale:
-\begin{itemize}[noitemsep, topsep=2pt]
-  \item \textbf{MAPE}: mean absolute percentage error (\%), mean across windows.
-  \item \textbf{MAPE\textsubscript{med}}: median MAPE, robust to outlier windows.
-  \item \textbf{DTW}: Dynamic Time Warping distance (Sakoe-Chiba $w=20$), mean
-        across windows.
-  \item \textbf{Pearson}: mean Pearson correlation coefficient across windows.
-  \item \textbf{Pearson\textsubscript{med}}: median Pearson correlation.
-\end{itemize}
-
-\subsection{Configurations}
-
-Two window configurations are evaluated (Table~\ref{tab:configs}).
-
-\begin{table}[H]
-  \caption{Experimental window configurations.}
-  \label{tab:configs}
-  \centering
-  \begin{tabular}{ccc}
-    \toprule
-    $\Lin=\Lout$ & Ensemble methods & Approx.\ held-out windows \\
-    \midrule
-    45  & Avg, Opt, Stack        & 24,302 \\
-    200 & Avg, Opt, Stack, AIS   & 24,302 \\
-    \bottomrule
-  \end{tabular}
-\end{table}
-
-Additionally, a \textbf{permutation search} with $L=200$ evaluates all 31
-non-empty subsets of five models (TCN, N-BEATS, LSTM, TiDE, EncDec;
-iTransformer excluded due to poor individual performance) under both
-optimisation and stacking.
+\subsection{Permutation Search}
+An exhaustive search evaluates all 31 non-empty subsets of five models (TCN,
+N-BEATS, LSTM, TiDE, EncDec; iTransformer excluded due to poor individual
+performance) under both optimisation and stacking, at $L=200$.
 
 % ─────────────────────────────────────────────────────────────────────────────
 \section{Results}
 \label{sec:results}
 % ─────────────────────────────────────────────────────────────────────────────
 
-\subsection{Individual Models ($L=45$)}
+\subsection{Short Horizon ($L=45$)}
 
-Table~\ref{tab:individual_45} reports held-out results for individual models
-with $\Lin=\Lout=45$.
+Table~\ref{tab:ind45} shows individual model results. TCN leads with
+MAPE=3.846\%. iTransformer is the worst performer (MAPE=8.528\%, $2.2\times$
+TCN), confirming that its variate-dimension attention provides no benefit in
+the univariate setting.
 
-\begin{table}[ht]
-  \caption{Individual model performance, $L=45$, held-out split.}
-  \label{tab:individual_45}
+\begin{table}[t]
+  \caption{Individual models, $L=45$, held-out. $\downarrow$ lower is better;
+           $\uparrow$ higher is better.}
+  \label{tab:ind45}
   \centering
   \resizebox{\columnwidth}{!}{%
-  \begin{tabular}{lccccc}
+  \begin{tabular}{lrrrrr}
     \toprule
-    Model & MAPE$\downarrow$ & MAPE\textsubscript{med}$\downarrow$ &
-            DTW$\downarrow$ & Pearson$\uparrow$ &
-            P\textsubscript{med}$\uparrow$ \\
+    Model & MAPE\,$\downarrow$ & M\textsubscript{med}\,$\downarrow$ &
+            DTW\,$\downarrow$ & Prs\,$\uparrow$ & P\textsubscript{med}\,$\uparrow$ \\
     \midrule
     \textbf{TCN}  & \textbf{3.846} & \textbf{2.881} & \textbf{33.54}
                   & 0.498 & \textbf{0.854} \\
@@ -398,211 +334,214 @@ with $\Lin=\Lout=45$.
   \end{tabular}}
 \end{table}
 
-TCN is the best individual model across all metrics except mean Pearson, where
-EncDec, LSTM, and the three ensemble strategies surpass it
-(Table~\ref{tab:ensemble_45}). The iTransformer's MAPE (8.53\%) is $2.2\times$
-that of TCN (3.85\%), confirming that its variate-dimension attention provides
-no benefit in the univariate setting.
+Table~\ref{tab:ens45} compares ensemble methods. Simple averaging
+(MAPE=4.352\%) is \emph{worse} than the best individual model (TCN 3.846\%),
+demonstrating that uniformly averaging over heterogeneous quality models
+dilutes the signal. Optimisation recovers performance by zeroing out TiDE and
+iTransformer (learned weights: TCN=0.476, EncDec=0.323, LSTM=0.151,
+N-BEATS=0.050, TiDE=0, iTransformer=0). Ridge stacking achieves the best MAPE
+(3.754\%), an \textbf{11.9\% relative improvement} over simple averaging.
 
-\subsection{Ensemble Performance ($L=45$)}
-
-\begin{table}[ht]
-  \caption{Ensemble performance, $L=45$, held-out split.}
-  \label{tab:ensemble_45}
+\begin{table}[t]
+  \caption{Ensemble methods, $L=45$, held-out. All 6 models included.}
+  \label{tab:ens45}
   \centering
   \resizebox{\columnwidth}{!}{%
-  \begin{tabular}{lccccc}
+  \begin{tabular}{lrrrrr}
     \toprule
-    Method & MAPE$\downarrow$ & MAPE\textsubscript{med}$\downarrow$ &
-             DTW$\downarrow$ & Pearson$\uparrow$ &
-             P\textsubscript{med}$\uparrow$ \\
+    Method & MAPE\,$\downarrow$ & M\textsubscript{med}\,$\downarrow$ &
+             DTW\,$\downarrow$ & Prs\,$\uparrow$ & P\textsubscript{med}\,$\uparrow$ \\
     \midrule
-    Simple Average         & 4.352 & 3.421 & 38.00 & 0.502 & 0.857 \\
-    Weighted (Opt.)        & 3.801 & 2.851 & 33.37 & \textbf{0.503} & 0.856 \\
     \textbf{Stacking (Ridge)} & \textbf{3.754} & 2.906 & \textbf{33.27}
                               & 0.496 & 0.833 \\
+    Weighted (Opt.)           & 3.801 & \textbf{2.851} & 33.37
+                              & \textbf{0.503} & \textbf{0.856} \\
+    Simple Average            & 4.352 & 3.421 & 38.00 & 0.502 & 0.857 \\
     \bottomrule
   \end{tabular}}
 \end{table}
 
-Simple averaging degrades performance relative to the best individual model
-(MAPE 4.35\% vs.\ TCN 3.85\%), because uniformly averaging over low-quality
-models such as iTransformer dilutes the signal. The optimised weights recover
-this by assigning zero weight to TiDE and iTransformer (learned weights:
-TCN=0.476, EncDec=0.323, LSTM=0.151, N-BEATS=0.050, TiDE=0, iTransformer=0).
-Ridge stacking achieves the lowest MAPE (3.754\%), an \textbf{11.9\% relative
-improvement} over simple averaging, by learning horizon-dependent combination
-weights.
+\subsection{Long Horizon ($L=200$)}
 
-A slight trade-off is observed: stacking reduces amplitude errors (MAPE, DTW)
-at a marginal cost to Pearson\textsubscript{med} (0.833 vs.\ 0.857 for
-averaging), suggesting that the meta-learner slightly distorts trajectory shape
-in some windows.
+At $L=200$, all MAPE values increase substantially due to greater uncertainty
+over longer horizons. Notably, the relative ranking of individual models
+changes: N-BEATS (MAPE=5.562\%) approaches TCN (5.518\%) and outperforms
+EncDec, while TiDE (5.802\%) recovers relative to its poor short-horizon
+performance, and LSTM deteriorates to 6.074\% (Table~\ref{tab:ind200}).
 
-\subsection{Individual Models and Ensembles ($L=200$)}
-
-\begin{table}[ht]
-  \caption{Individual model performance, $L=200$, held-out split.}
-  \label{tab:individual_200}
+\begin{table}[t]
+  \caption{Individual models, $L=200$, held-out.}
+  \label{tab:ind200}
   \centering
   \resizebox{\columnwidth}{!}{%
-  \begin{tabular}{lccccc}
+  \begin{tabular}{lrrrrr}
     \toprule
-    Model & MAPE$\downarrow$ & MAPE\textsubscript{med}$\downarrow$ &
-            DTW$\downarrow$ & Pearson$\uparrow$ &
-            P\textsubscript{med}$\uparrow$ \\
+    Model & MAPE\,$\downarrow$ & M\textsubscript{med}\,$\downarrow$ &
+            DTW\,$\downarrow$ & Prs\,$\uparrow$ & P\textsubscript{med}\,$\uparrow$ \\
     \midrule
-    TCN          & \TBD & \TBD & \TBD & \TBD & \TBD \\
-    EncDec       & \TBD & \TBD & \TBD & \TBD & \TBD \\
-    LSTM         & \TBD & \TBD & \TBD & \TBD & \TBD \\
-    N-BEATS      & \TBD & \TBD & \TBD & \TBD & \TBD \\
-    TiDE         & \TBD & \TBD & \TBD & \TBD & \TBD \\
-    iTransformer & \TBD & \TBD & \TBD & \TBD & \TBD \\
-    MOMENT       & \TBD & \TBD & \TBD & \TBD & \TBD \\
-    Moirai       & \TBD & \TBD & \TBD & \TBD & \TBD \\
+    \textbf{TCN}  & \textbf{5.518} & 4.754 & 101.01 & \textbf{0.711} & 0.860 \\
+    N-BEATS       & 5.562 & \textbf{4.628} & \textbf{91.90} & 0.719 & \textbf{0.867} \\
+    EncDec        & 5.593 & 4.704 & 94.25 & 0.697 & 0.855 \\
+    TiDE          & 5.802 & 4.863 & 98.91 & 0.647 & 0.844 \\
+    LSTM          & 6.074 & 4.986 & 104.24 & 0.659 & 0.849 \\
+    iTransformer  & 9.673 & 8.803 & 203.16 & 0.150 & \TBD  \\
+    \midrule
+    MOMENT        & \TBD  & \TBD  & \TBD   & \TBD  & \TBD  \\
+    Moirai        & \TBD  & \TBD  & \TBD   & \TBD  & \TBD  \\
     \bottomrule
   \end{tabular}}
 \end{table}
 
-\begin{table}[ht]
-  \caption{Ensemble performance, $L=200$, held-out split.}
-  \label{tab:ensemble_200}
+Ensemble results (Table~\ref{tab:ens200}) mirror the $L=45$ pattern but with
+larger absolute gaps. Stacking (MAPE=4.221\%) achieves \textbf{21.6\% relative
+improvement} over simple averaging (5.383\%), compared to 11.9\% at $L=45$.
+The optimised weights now distribute across more models (N-BEATS=0.319,
+TiDE=0.261, EncDec=0.211, TCN=0.126, LSTM=0.083, iTransformer=0), a markedly
+different pattern than at $L=45$, illustrating how optimal combination is
+horizon-dependent.
+
+\begin{table}[t]
+  \caption{Ensemble methods, $L=200$, held-out. All 6 models included.}
+  \label{tab:ens200}
   \centering
   \resizebox{\columnwidth}{!}{%
-  \begin{tabular}{lccccc}
+  \begin{tabular}{lrrrrr}
     \toprule
-    Method & MAPE$\downarrow$ & MAPE\textsubscript{med}$\downarrow$ &
-             DTW$\downarrow$ & Pearson$\uparrow$ &
-             P\textsubscript{med}$\uparrow$ \\
+    Method & MAPE\,$\downarrow$ & M\textsubscript{med}\,$\downarrow$ &
+             DTW\,$\downarrow$ & Prs\,$\uparrow$ & P\textsubscript{med}\,$\uparrow$ \\
     \midrule
-    Simple Average       & 5.383 & \TBD & \TBD & \TBD & \TBD \\
-    Weighted (Opt.)      & 4.977 & \TBD & \TBD & \TBD & \TBD \\
-    Stacking (Ridge)     & 4.221 & \TBD & \TBD & \TBD & \TBD \\
-    \textbf{AIS-Ensemble}& \TBD  & \TBD & \TBD & \TBD & \TBD \\
+    \textbf{Stacking (Ridge)} & \textbf{4.221} & \textbf{3.707} & \textbf{66.69}
+                              & \textbf{0.837} & \textbf{0.919} \\
+    Weighted (Opt.)           & 4.977 & 4.185 & 84.98 & 0.774 & 0.896 \\
+    Simple Average            & 5.383 & 4.650 & 98.10 & 0.768 & 0.891 \\
+    AIS-Ensemble              & \TBD  & \TBD  & \TBD  & \TBD  & \TBD  \\
     \bottomrule
   \end{tabular}}
 \end{table}
-
-At $L=200$, all methods show higher MAPE than at $L=45$, consistent with
-increasing uncertainty at longer horizons. Stacking (MAPE 4.221) maintains its
-advantage over optimisation-based weighting (4.977) and averaging (5.383). The
-absolute gap between stacking and simple averaging is larger at $L=200$
-(1.16 pp) than at $L=45$ (0.60 pp), suggesting that horizon-dependent
-combination is more valuable for longer forecasts.
 
 \subsection{Permutation Search ($L=200$)}
 
-Table~\ref{tab:permutations} summarises the top-5 combinations for each
-ensemble method from the exhaustive search over all 31 non-empty subsets of
-five models.
+Table~\ref{tab:perm} reports the top combinations from the exhaustive search
+over all 31 subsets. The stacking ranking is dominated by combinations
+including TiDE, whose error pattern is complementary to N-BEATS and TCN even
+though TiDE is a mediocre individual model. Critically, the best 2-model
+stacking pair (N-BEATS+TiDE, MAPE=4.627\%) \emph{outperforms} the best
+5-model optimisation result (MAPE=4.977\%), demonstrating that ensemble
+\emph{quality} matters more than ensemble \emph{size} under optimisation-based
+combination.
 
-\begin{table}[ht]
-  \caption{Top-5 combinations from exhaustive search, $L=200$. Best MAPE in
-           bold. iTransformer excluded from search.}
-  \label{tab:permutations}
+\begin{table}[t]
+  \caption{Top combinations from permutation search ($L=200$, held-out).
+           iTransformer excluded. Full-set stacking/opt from Table~\ref{tab:ens200}.}
+  \label{tab:perm}
   \centering
   \resizebox{\columnwidth}{!}{%
   \begin{tabular}{lcc}
     \toprule
-    Combination & MAPE\textsubscript{Opt}$\downarrow$ &
-                  MAPE\textsubscript{Stack}$\downarrow$ \\
+    Combination & MAPE\textsubscript{Opt}\,$\downarrow$ &
+                  MAPE\textsubscript{Stack}\,$\downarrow$ \\
     \midrule
-    N-BEATS + TiDE                         & 5.006 & \textbf{4.627} \\
-    TCN + TiDE                             & 4.985 & 4.759 \\
-    LSTM + TiDE                            & 5.022 & 4.758 \\
-    N-BEATS + LSTM                         & 5.014 & 4.877 \\
-    TCN + N-BEATS                          & 5.022 & 4.911 \\
+    \textbf{N-BEATS + TiDE}        & 5.006 & \textbf{4.627} \\
+    LSTM + TiDE                    & 5.066 & 4.758 \\
+    TCN + TiDE                     & 5.044 & 4.759 \\
+    N-BEATS + LSTM                 & 5.014 & 4.877 \\
+    TCN + N-BEATS                  & 5.022 & 4.911 \\
+    N-BEATS + EncDec               & 5.021 & 4.946 \\
     \midrule
-    TCN+N-BEATS+LSTM+TiDE+EncDec (all 5)  & 4.977 & 4.221 \\
+    All 5 models (full ensemble)   & 4.977 & 4.221 \\
     \bottomrule
   \end{tabular}}
 \end{table}
 
-Several findings emerge. First, stacking consistently dominates
-optimisation-based weighting across all 31 combinations --- a systematic finding
-that validates the advantage of horizon-aware meta-learning. Second, the
-best 2-model stacking combination (N-BEATS + TiDE, MAPE 4.627) outperforms the
-best 5-model optimisation combination (MAPE 4.977), illustrating that ensemble
-\emph{quality} matters more than ensemble \emph{size} under optimisation.
-Third, TiDE --- which performed poorly as an individual model (MAPE 5.75 at
-$L=45$) --- appears frequently in top stacking pairs, suggesting that its
-diverse error pattern is exploited by the meta-learner even when its standalone
-accuracy is low.
+Stacking dominates optimisation in \textit{every single one} of the 31
+combinations. The delta (MAPE\textsubscript{Opt} $-$ MAPE\textsubscript{Stack})
+is consistently positive across all subsets, confirming that horizon-aware
+meta-learning is superior to simplex-projected weight search regardless of
+which models are included.
 
 \subsection{AIS-Ensemble Analysis}
+\label{ssec:ais}
 
-The AIS-Ensemble operates at the intersection of ensemble learning and
-immunological computation. \TBD (full quantitative results pending
-re-execution of \texttt{ensemble\_ais.ipynb}.) Preliminary diagnostics reveal:
+Complete AIS quantitative results are pending re-execution of the
+\texttt{ensemble\_ais.ipynb} notebook (\TBD). Preliminary diagnostics show:
 
 \textbf{Out-of-distribution detection.} Approximately 10--20\% of test windows
-are classified as nonself (out-of-distribution) per subject, indicating that
-the exercise patterns in \textit{held\_out} are not always well-represented by
-the \textit{ens\_fit} calibration distribution. These windows fall back to TCN.
+per subject are flagged as nonself, indicating that held-out exercise patterns
+are not always covered by the ens\_fit calibration distribution. These windows
+fall back to TCN.
 
-\textbf{Per-subject weight variation.} The subject memory matrices $M_i$ show
-diverse distributions across subjects: some subjects have memory matrices
-concentrated on TCN (uniform, steady-state HR profiles), while others distribute
-weight across TCN and EncDec (complex recovery patterns).
+\textbf{Per-subject weight diversity.} Subject memory matrices $M_i$ differ
+substantially across subjects. Subjects with steady-state HR profiles have
+$M_i$ concentrated on TCN, while subjects with complex recovery patterns
+distribute weight across TCN and EncDec.
 
-\textbf{Aggregate performance.} Although the AIS-Ensemble does not improve
-upon stacking in aggregate MAPE --- consistent with the finding that
-per-window adaptation is not the primary bottleneck in this dataset --- it
-produces subject-level insights not available from static ensemble methods. In
-particular, the nonself ratio per subject correlates with inter-subject
-variability in individual model accuracy, suggesting that OOD detection could
-serve as a proxy for subject-specific model reliability.
+\textbf{Discussion.} The AIS-Ensemble does not improve aggregate MAPE beyond
+stacking---consistent with the finding that per-window adaptation is not the
+primary bottleneck in this dataset---but provides interpretable subject-level
+information unavailable from static methods. The nonself ratio per subject
+correlates with inter-subject variability in individual model accuracy,
+suggesting that OOD detection could serve as a deployment-time reliability flag.
 
-\subsection{Horizon Comparison}
+\subsection{Foundation Model Results}
+Foundation model results (\TBD) are pending re-execution of the fine-tuning
+notebooks. We hypothesise that: (i) zero-shot performance will trail
+well-trained local models due to domain mismatch; (ii) fine-tuning will
+substantially close the gap; (iii) benefit may be greatest for subjects with
+few training sessions, where pretrained representations compensate for data
+scarcity.
 
-Comparing $L=45$ and $L=200$ results: (i) MAPE increases with horizon for all
-methods; (ii) the relative advantage of stacking over simple averaging grows
-with horizon (11.9\% at $L=45$ vs.\ \TBD at $L=200$); (iii) the relative
-ranking of individual models is consistent across both horizons, with TCN,
-EncDec, and LSTM forming the top tier.
+\subsection{Cross-Horizon Analysis}
+Table~\ref{tab:summary} summarises the best method per horizon. Stacking wins
+at both horizons. The relative gain of stacking over simple averaging grows
+from 11.9\% at $L=45$ to 21.6\% at $L=200$, confirming that horizon-aware
+meta-learning becomes increasingly valuable for longer forecasts.
 
-\subsection{Foundation Models}
-
-\TBD\ (pending fine-tuning notebook re-execution). We hypothesise that:
-(i) zero-shot foundation model performance will trail well-trained local models
-due to domain mismatch; (ii) fine-tuning will substantially close the gap;
-(iii) foundation models may provide the greatest benefit for subjects with the
-fewest training sessions, where the pretrained representation compensates for
-data scarcity.
+\begin{table}[t]
+  \caption{Best ensemble per horizon (held-out MAPE).}
+  \label{tab:summary}
+  \centering
+  \begin{tabular}{lccc}
+    \toprule
+    Horizon & Best method & MAPE & vs.\ avg \\
+    \midrule
+    $L=45$  & Stacking (Ridge) & 3.754 & $-11.9\%$ \\
+    $L=200$ & Stacking (Ridge) & 4.221 & $-21.6\%$ \\
+    \bottomrule
+  \end{tabular}
+\end{table}
 
 % ─────────────────────────────────────────────────────────────────────────────
 \section{Discussion}
 \label{sec:discussion}
 % ─────────────────────────────────────────────────────────────────────────────
 
-\textbf{Stacking vs.\ optimisation.} The systematic superiority of Ridge
-stacking across all model subsets and both horizon lengths is a central finding.
-The key advantage is horizon-awareness: the Ridge meta-learner can assign
-different effective weights to each model at each forecast step. For HR
-forecasting, this is meaningful because different architectures capture
-different temporal scales --- TCN excels at short-range dynamics via dilated
-convolutions, while EncDec captures longer response curves via its latent-space
-encoding.
+\textbf{Why stacking beats optimisation.} The Ridge meta-learner learns
+horizon-dependent weights: it can favour TCN at short forecast steps and EncDec
+at later steps. The optimised simplex weights must use a single scalar per
+model across the entire horizon, an inherent expressivity limitation. At
+$L=200$, this matters more because different models capture dynamics at
+different temporal scales.
 
-\textbf{Danger of simple averaging with heterogeneous quality.} The degradation
-of simple averaging relative to the best individual model (at $L=45$) is a
-practical warning: when ensemble members span a wide quality range (TCN MAPE
-3.85\% vs.\ iTransformer 8.53\%), equal-weight combination shifts the
-prediction towards the low-quality tail. Practitioners should use at least
-optimised weights or stacking when combining heterogeneous forecasters.
+\textbf{TiDE's role in ensembles.} TiDE is a mediocre individual model (MAPE
+5.75\% and 5.80\% at $L=45$ and $L=200$), yet it consistently appears in top
+stacking pairs (N-BEATS+TiDE is the best 2-model combination). Its MLP-based
+architecture produces errors that are partially orthogonal to those of
+recurrent and convolutional models, making it a useful diversity contributor
+even when individually weak.
 
-\textbf{AIS-Ensemble as a diagnostic tool.} While the AIS-Ensemble does not
-improve aggregate MAPE beyond stacking, it offers a unique capability:
-subject-level adaptation and uncertainty quantification via out-of-distribution
-detection. In a real deployment scenario, the nonself ratio per session could
-trigger an alert (e.g., flagging unusual HR responses), complementing the
-quantitative forecast.
+\textbf{Danger of simple averaging.} At $L=45$, simple averaging
+(\textit{worse} than the best individual model by 0.50 pp MAPE) demonstrates
+a practical pitfall: combining a strong model (TCN MAPE 3.85\%) with a very
+weak one (iTransformer MAPE 8.53\%) via equal weights shifts predictions toward
+the low-quality tail. Practitioners should always use at least optimised
+weights when model quality is non-uniform.
 
-\textbf{Short vs.\ long horizon.} The consistent superiority of $L=45$ over
-$L=200$ in absolute MAPE (3.75\% vs.\ 4.22\% for stacking) reflects the
-fundamental difficulty of long-horizon physiological forecasting. Shorter
-windows may also benefit from more training instances per series (higher window
-density), which can improve all downstream models and ensemble weights.
+\textbf{Horizon changes optimal model ranking.} At $L=45$, TCN dominates and
+TiDE is near last. At $L=200$, TCN and N-BEATS are nearly tied and TiDE
+recovers. This shift---captured by the different optimised weight vectors
+(TCN=0.476 at $L=45$ vs.\ 0.126 at $L=200$)---shows that horizon length is a
+critical hyperparameter that changes which architecture is best suited to the
+task.
 
 % ─────────────────────────────────────────────────────────────────────────────
 \section{Conclusion}
@@ -610,36 +549,32 @@ density), which can improve all downstream models and ensemble weights.
 % ─────────────────────────────────────────────────────────────────────────────
 
 We presented a systematic study of individual deep learning and foundation
-models with four ensemble strategies for multi-step HR forecasting. Key
-conclusions are:
-
-\begin{enumerate}[noitemsep, topsep=2pt]
-  \item TCN is the strongest individual model; iTransformer and TiDE are
-        significantly weaker in the univariate setting.
-  \item Ridge stacking consistently outperforms optimisation-based weighting
-        and simple averaging, achieving an 11.9\% relative MAPE reduction over
-        the simple-average baseline at $L=45$.
-  \item Simple averaging degrades performance when model quality is
-        non-uniform --- practitioners must use weighted or stacking methods.
-  \item The permutation search confirms stacking dominance across all 31 model
-        subsets; two-model stacking can outperform five-model optimisation.
-  \item The AIS-Ensemble offers subject-level interpretability and
-        out-of-distribution detection, complementing aggregate accuracy with
-        patient-specific diagnostics.
+models with four ensemble strategies for multi-step HR forecasting.  Key
+conclusions:
+\begin{enumerate}[noitemsep,topsep=2pt]
+  \item TCN is the best individual model at $L=45$; N-BEATS approaches it at
+        $L=200$.  iTransformer fails in the univariate setting.
+  \item Ridge stacking consistently outperforms optimisation and averaging at
+        both horizons and across all 31 model subsets in the permutation search.
+  \item Simple averaging is \emph{harmful} when model quality is non-uniform;
+        practitioners must use weighted or stacking methods.
+  \item A 2-model stacking pair (N-BEATS+TiDE) can outperform all-model
+        optimisation, showing ensemble quality dominates ensemble size.
+  \item AIS-Ensemble provides per-subject adaptation and OOD detection,
+        offering deployment-time reliability indicators beyond aggregate MAPE.
 \end{enumerate}
 
 Future work will incorporate physiological covariates (power, cadence, RPE) as
-ensemble conditioning signals, explore online AIS memory updates as sessions
-accumulate, and extend the framework to probabilistic HR forecasting.
+conditioning signals, explore online AIS memory updates as sessions accumulate,
+and extend the framework to probabilistic HR forecasting.
 
 % ─────────────────────────────────────────────────────────────────────────────
 \appendix
 % ─────────────────────────────────────────────────────────────────────────────
-
-\section{Model Hyperparameters}
+\section{Hyperparameters}
 
 \begin{table}[H]
-  \caption{Local model hyperparameters.}
+  \caption{Model hyperparameters.}
   \label{tab:hparams}
   \centering
   \resizebox{\columnwidth}{!}{%
@@ -647,38 +582,21 @@ accumulate, and extend the framework to probabilistic HR forecasting.
     \toprule
     Model & Key hyperparameters \\
     \midrule
-    TCN          & filters=32, kernel\_size=12, dilations=\{1,2,4,8\} \\
+    TCN          & filters=32, kernel=12, dilations=\{1,2,4,8\} \\
     N-BEATS      & stacks=2, blocks=3, layers=4, width=256 \\
     LSTM         & units=[128,64], dropout=0.2 \\
-    TiDE         & enc\_dim=256, dec\_dim=256, temporal\_width=4 \\
+    TiDE         & enc=256, dec=256, temporal\_width=4 \\
     EncDec       & enc\_units=128, dec\_units=128, latent=64 \\
     iTransformer & d\_model=128, heads=8, d\_ff=256, layers=2 \\
     MOMENT       & context=512, epochs=5, lr=$5{\times}10^{-4}$ \\
     Moirai       & patch\_size=32, samples=20 \\
+    \midrule
+    \multicolumn{2}{l}{\textit{AIS-Ensemble}} \\
+    & $K$=30 antibodies, features=20, $\sigma$=1.0 \\
+    & suppression $\sigma_s$=0.3, clones=5, iters=50 \\
+    & OOD threshold=99th pct., fallback=TCN \\
     \bottomrule
   \end{tabular}}
-\end{table}
-
-\section{AIS Hyperparameters}
-
-\begin{table}[H]
-  \caption{AIS-Ensemble hyperparameters.}
-  \label{tab:ais_hparams}
-  \centering
-  \begin{tabular}{ll}
-    \toprule
-    Parameter & Value \\
-    \midrule
-    Antibodies ($K$)         & 30   \\
-    Feature dimension        & 20   \\
-    Affinity $\sigma$        & 1.0  \\
-    Suppression $\sigma_s$   & 0.3  \\
-    Clones / antibody        & 5    \\
-    Max iterations           & 50   \\
-    OOD threshold            & 99th pct. \\
-    Fallback model           & TCN  \\
-    \bottomrule
-  \end{tabular}
 \end{table}
 
 % ─────────────────────────────────────────────────────────────────────────────
